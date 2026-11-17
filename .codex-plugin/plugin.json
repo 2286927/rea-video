@@ -16,6 +16,8 @@
     "category": "Productivity",
     "capabilities": ["Interactive", "Read", "Write"],
     "websiteURL": "https://github.com/JuneYaooo/rea-video",
+    "logo": "./.codex-plugin/logo.png",
+    "composerIcon": "./.codex-plugin/logo.png",
     "defaultPrompt": [
       "用 rea-video 拆解这条视频是怎么做的：~/Movies/ref.mp4",
       "这条魔术视频是怎么变的？找出揭秘时刻：~/Movies/magic.mp4"

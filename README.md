@@ -42,6 +42,20 @@ Install https://github.com/JuneYaooo/rea-video, then break down this video: /pat
 
 The agent installs the CLI, learns the workflow and runs the whole thing. You need ffmpeg and Python 3.10+.
 
+You can also install rea-video as an agent plugin, which adds its skill to your agent:
+
+```bash
+# Codex
+codex plugin marketplace add JuneYaooo/rea-video
+codex plugin add rea-video@rea-video
+
+# Claude Code
+claude plugin marketplace add JuneYaooo/rea-video
+claude plugin install rea-video@rea-video
+```
+
+`.agents/plugins/marketplace.json` is the agent-agnostic marketplace entry. The agent still installs the CLI the first time it runs a breakdown.
+
 Breakdowns are fully upgraded. Each one gives you two outputs:
 
 - **Report** (`report.html` / PDF), for you: more reader-friendly, with a clearer structure, easier to learn from and to understand how the video was made and how to remake it.
