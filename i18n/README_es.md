@@ -177,7 +177,7 @@ La detección de material real acierta entre un 97 y un 99 %; en nueve clips ano
 
 ## Cómo funciona
 
-![Pipeline de rea-video](../docs/rea-flow_es.svg)
+![Pipeline de rea-video](../docs/flow/rea-flow_es.svg)
 
 1. Separar: corta el vídeo en planos y divide el audio en voz, música y efectos.
 2. Reunir evidencias: mide los fotogramas (cadencia, ruido del sensor, si toda la imagen se desplaza como un único plano, etiquetas AIGC en los metadatos), mira las imágenes (manos, texto, física) y escucha el audio (BPM, tonalidad, si se canta o se habla).

@@ -177,7 +177,7 @@ La détection des assets réels atteint 97 à 99 % ; sur neuf clips annotés à 
 
 ## Comment ça marche
 
-![Pipeline rea-video](../docs/rea-flow_fr.svg)
+![Pipeline rea-video](../docs/flow/rea-flow_fr.svg)
 
 1. Découpage : la vidéo est coupée en plans, et le son séparé en voix, musique et effets.
 2. Collecte des indices : mesures sur les images (cadence d'images, bruit du capteur, image entière qui bouge d'un bloc comme un seul plan, tags AIGC dans les métadonnées) ; examen visuel (mains, texte, physique) ; écoute (BPM, tonalité, chant ou parole).

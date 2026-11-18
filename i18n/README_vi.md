@@ -177,7 +177,7 @@ Nhận diện tư liệu thật đạt 97–99%; trên 9 clip gắn nhãn thủ 
 
 ## Cơ chế hoạt động
 
-![Quy trình rea-video](../docs/rea-flow_vi.svg)
+![Quy trình rea-video](../docs/flow/rea-flow_vi.svg)
 
 1. Tách lớp: cắt video thành từng shot và tách âm thanh thành 3 track gồm lời thoại, nhạc nền và hiệu ứng.
 2. Thu thập bằng chứng: đo đạc thông số (nhịp lặp khung hình, nhiễu cảm biến, xem toàn khung hình có chuyển động như một mặt phẳng hay không, thẻ AIGC trong metadata), nhìn ảnh (bàn tay, chữ viết, quy luật vật lý) và lắng nghe âm thanh (BPM, giọng điệu, hát hay nói).

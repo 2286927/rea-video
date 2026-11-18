@@ -177,7 +177,7 @@ Echte Assets werden zu 97–99 % erkannt; bei neun von Hand annotierten Clips we
 
 ## Wie es funktioniert
 
-![rea-video-Pipeline](../docs/rea-flow_de.svg)
+![rea-video-Pipeline](../docs/flow/rea-flow_de.svg)
 
 1. Zerlegen: Video in Shots schneiden, Ton in Stimme, Musik und Effekte trennen.
 2. Belege sammeln: Frames vermessen (Frame-Takt, Sensorrauschen, ob sich das ganze Bild wie eine einzige Ebene verschiebt, AIGC-Tags in den Metadaten), Bilder anschauen (Hände, Text, Physik), hinhören (BPM, Tonart, Gesang oder Sprache).

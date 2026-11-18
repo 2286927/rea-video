@@ -177,7 +177,7 @@ Real-asset detection is 97–99%; on nine hand-labelled clips, shot boundaries r
 
 ## How it works
 
-![rea-video pipeline](docs/rea-flow_en.svg)
+![rea-video pipeline](docs/flow/rea-flow_en.svg)
 
 1. Split: cut the video into shots and split the audio into voice, music and effects.
 2. Gather evidence: measure (frame cadence, sensor noise, whether the whole image moves as one flat plane, AIGC tags in the metadata), look (hands, text, physics) and listen (BPM, key, singing vs speech).
