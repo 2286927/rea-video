@@ -22,6 +22,7 @@ it, probability), the stretches where a lot happens inside one shot, each shot's
 curve of the whole video (the rhythm). decompose reads it to split the shots and to pick each shot's key frames."""
 from __future__ import annotations
 
+import bisect
 import json
 import math
 from concurrent.futures import ThreadPoolExecutor
@@ -232,26 +233,32 @@ def rhythm(track: FrameTrack, step: float = RHYTHM_STEP) -> list[float]:
 
 # ------------------------------------------------------------------ sheets -----------------------------------------
 
-def _grab(video: str, info: VideoInfo, times: list[float], width: int = 160) -> list[np.ndarray]:
+def _grab(video: str, info: VideoInfo, times: list[float], width: int = 160, fill: bool = True) -> list:
     """Frames at the given times, one decode pass over the span they cover, keeping only the frame nearest each time
-    (a whole video's overview never holds more than its tiles in memory)."""
+    (a whole video's overview never holds more than its tiles in memory). A time with no frame within one frame:
+    filled with the first frame found (fill), else None."""
     if not times:
         return []
     order = sorted(range(len(times)), key=lambda k: times[k])
-    t0, t1 = times[order[0]], times[order[-1]]
+    sorted_t = [times[k] for k in order]
+    t0, t1 = sorted_t[0], sorted_t[-1]
     step = 1.0 / max(info.fps, 1)
     best: dict[int, tuple[float, np.ndarray]] = {}
     for i, f in enumerate(iter_frames(video, info, width, start=t0, duration=t1 - t0 + 2 * step)):
         ft = t0 + i * step
-        for k in order:
+        lo, hi = bisect.bisect_left(sorted_t, ft - step), bisect.bisect_right(sorted_t, ft + step)
+        for j in range(lo, hi):
+            k = order[j]
             d = abs(ft - times[k])
             if d <= step and (k not in best or d < best[k][0]):
                 best[k] = (d, f)
     if not best:
-        return []
+        return [] if fill else [None] * len(times)
     got = [best.get(k, (0, None))[1] for k in range(len(times))]
-    fill = next(f for f in got if f is not None)
-    return [f if f is not None else fill for f in got]
+    if not fill:
+        return got
+    first = next(f for f in got if f is not None)
+    return [f if f is not None else first for f in got]
 
 
 def tile_size(info: VideoInfo, look: str) -> tuple[int, int]:

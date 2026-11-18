@@ -244,6 +244,36 @@ def extract_frame(path: str | Path, t: float, out_path: str | Path, width: int |
     return out_path
 
 
+def extract_frames(path: str | Path, picks: list[tuple[int, str | Path]], width: int | None = None) -> list[Path]:
+    """Frames by index (decode order, as the frame track counts them) to JPEG files, all from one decode: the same
+    pictures extract_frame writes for those frames, without a seek and a decode from the key frame before each."""
+    if not picks:
+        return []
+    by_frame: dict[int, list[Path]] = {}
+    for n, out in picks:
+        by_frame.setdefault(max(0, int(n)), []).append(Path(out))
+    order = sorted(by_frame)
+    tmp = Path(tempfile.mkdtemp(prefix="rea_frames_"))
+    try:
+        sel = "+".join(f"eq(n\\,{n})" for n in order)
+        vf = f"select='{sel}'" + (f",scale={width}:-2" if width else "")
+        cmd = ["ffmpeg", "-v", "error", "-y", "-i", str(path), "-vf", vf, *passthrough_args(), "-q:v", "2", str(tmp / "f_%06d.jpg")]
+        _run_ffmpeg(cmd, f"{len(order)} frames")
+        got = sorted(tmp.glob("f_*.jpg"))
+        written = []
+        for k, n in enumerate(order):
+            for out in by_frame[n]:
+                out.parent.mkdir(parents=True, exist_ok=True)
+                src = got[min(k, len(got) - 1)] if got else None
+                if src is None:
+                    continue
+                shutil.copyfile(src, out)
+                written.append(out)
+        return written
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _run_ffmpeg(cmd: list[str], what: str) -> None:
     got = subprocess.run(cmd, capture_output=True)
     if got.returncode != 0:

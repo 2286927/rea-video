@@ -28,6 +28,11 @@ GEN = CHUNK - 2 * TRIM
 WINDOW = (0.5 - 0.5 * np.cos(2 * np.pi * np.arange(N_FFT) / N_FFT)).astype(np.float32)  # periodic hann
 
 
+# threads per separation model: the models run alongside the picture analysis, and more threads than the machine's
+# performance cores only fight over them (4 is as fast as all of them alone, and leaves room; the output is the same)
+MODEL_THREADS = max(1, min(4, os.cpu_count() or 4))
+
+
 def models_dir() -> Path:
     return Path(os.getenv("REA_VIDEO_MODELS", str(Path.home() / ".cache/rea-video/models"))).expanduser()
 

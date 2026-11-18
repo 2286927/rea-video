@@ -13,8 +13,8 @@ from .assets import detect_embedded, material_summary
 from .audio import analyze_audio, merge_audio_with_vlm, speaks_in
 from .sound_source import MUSIC_ZH, classify_sound_sources, per_clip_audio
 from .classify import FILM_HINT_ZH, LABEL_ZH, OVERLAY_KIND_ZH, RULES, UNMEASURED, decide, deterministic, drop_scene_text, fuse, group_of, image_source_guess, overlay_layers, top, verdict_text, video_context
-from .features import collect_samples, crop_box, intersect_box, photo_letterbox, shot_features
-from .media import cut_clip, extract_frame, require_tools, video_info
+from .features import collect_all_samples, collect_samples, crop_box, intersect_box, photo_letterbox, shot_features
+from .media import cut_clip, extract_frame, extract_frames, require_tools, video_info
 from .overlay import ocr_frames, persistent_template, shot_ocr_frames, shot_ocr_items, static_overlays, summarize_text
 from .plan import Planner
 from .probe import provenance
@@ -70,11 +70,8 @@ _DECODE_FP: str | None = None
 KEY_SHEET_MAX = 8  # key frames on one shot's contact sheet
 
 
-def key_sheet_frames(video: Path, info, kf: list[dict], smp) -> tuple[list, list[float]]:
-    """Frames for a shot's contact sheet: its key frames (at most KEY_SHEET_MAX, named roles first), else the evenly
-    spaced samples."""
-    from .survey import _grab
-
+def key_sheet_times(kf: list[dict]) -> list[float]:
+    """Times of a shot's contact-sheet frames: its key frames, at most KEY_SHEET_MAX, named roles first."""
     rows = kf
     if len(rows) > KEY_SHEET_MAX:
         generic = [r.get("by") == "tool" and r.get("role") in ("change", "last") for r in rows]
@@ -84,12 +81,29 @@ def key_sheet_frames(video: Path, info, kf: list[dict], smp) -> tuple[list, list
             ranked = sorted(range(1, len(rows)), key=lambda i: (generic[i], -float(rows[i].get("p") or 0)))
             keep = set(ranked[:KEY_SHEET_MAX - 1]) | {0}
         rows = [r for i, r in enumerate(rows) if i in keep]
-    times = [float(r["t"]) for r in rows]
-    if len(times) >= 2:
-        frames = _grab(str(video), info, times, width=320)
-        if len(frames) == len(times):
-            return frames, times
-    return smp.frames, smp.frame_times
+    return [float(r["t"]) for r in rows]
+
+
+def key_sheets(video: Path, info, kf_by_shot: dict[int, list[dict]]) -> dict[int, tuple[list, list[float]]]:
+    """{shot: (frames, times)} for every shot's contact sheet, from one decode of the video; a shot with fewer than two
+    key frames, or whose frames were not found, is left out (its sheet uses the evenly spaced samples)."""
+    from .survey import _grab
+
+    want = {i: t for i, kf in kf_by_shot.items() if len(t := key_sheet_times(kf)) >= 2}
+    flat = [t for ts in want.values() for t in ts]
+    got = _grab(str(video), info, flat, width=320, fill=False) if flat else []
+    out, k = {}, 0
+    for i, ts in want.items():
+        fr = got[k:k + len(ts)]
+        k += len(ts)
+        if len(fr) == len(ts) and any(f is not None for f in fr):
+            first = next(f for f in fr if f is not None)
+            out[i] = ([f if f is not None else first for f in fr], ts)
+    return out
+
+
+STILLS_BATCH_EVERY = 250  # first / last stills come from one decode when shots average fewer frames than this (decoding
+# runs ~1800 frames a second while a seek costs ~0.07 s even four at a time: one pass wins unless shots are very long)
 
 
 def decode_fingerprint() -> str:
@@ -166,6 +180,33 @@ def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, 
         stems_job = stems_pool.submit(run_stems)
         stems_pool.shutdown(wait=False)
 
+    # ---------------- shared decodes, alongside the packaging pass ---------------
+    # every shot's samples (all its frames, as collect_samples reads them), its contact-sheet frames and its full-size
+    # first / last frames come from whole-video decodes (a decode per shot starts from the key frame before it each
+    # time) running while the text is read
+    still_w = min(1080, info.display_size[0] or 1080)  # never upscale; rotated video: displayed width
+    kf_by_shot = {s.index: keyframes.get(str(s.index)) or [{"frame": f, "t": round(s.t(f), 3), "role": "first" if f == s.start_frame else "change", "by": "tool"}
+                                                         for f in key_frames(track, s.start_frame, s.end_frame)] for s in shots}
+    still_jobs = []
+    for s in shots:
+        sid = f"shot_{s.index:03d}"
+        still_jobs.append((s.start + min(0.05, s.duration / 4), out / "shots" / f"{sid}_first.jpg"))
+        still_jobs.append((max(s.start, s.end - min(0.08, s.duration / 4)), out / "shots" / f"{sid}_last.jpg"))
+    decode_pool = ThreadPoolExecutor(max_workers=3)
+    samples_job = decode_pool.submit(collect_all_samples, str(video), info, shots)
+    sheets_job = decode_pool.submit(key_sheets, video, info, kf_by_shot)
+    if track.n < STILLS_BATCH_EVERY * len(shots):  # dense cuts: one decode beats a seek per still
+        times = track.times if track.times is not None else None
+
+        def first_at(t: float) -> int:  # the frame a seek to t shows: the first one at or after t
+            if times is not None:
+                return min(track.n - 1, int(np.searchsorted(np.asarray(times), t - 1e-6)))
+            return min(track.n - 1, int(np.ceil(t * track.fps - 1e-6)))
+        stills_job = decode_pool.submit(extract_frames, video, [(first_at(t), p) for t, p in still_jobs], still_w)
+    else:
+        still_pool = ThreadPoolExecutor(max_workers=4)
+        stills_job = [still_pool.submit(extract_frame, video, t, p, still_w) for t, p in still_jobs]
+
     # ---------------- packaging layer: subtitles / 花字 / stickers on one timeline ---------------
     pack = None
     if packaging:
@@ -183,18 +224,16 @@ def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, 
 
     shot_records: list[dict] = []
     template_frames: list[np.ndarray] = []
-    samples_by_shot = {}
+    samples_by_shot = samples_job.result()
+    sheets = sheets_job.result()
     for s in shots:
-        smp = collect_samples(str(video), info, s)
-        samples_by_shot[s.index] = smp
+        smp = samples_by_shot[s.index]
         if smp.frames:
             template_frames.extend([smp.frames[0], smp.frames[-1]])
     template = persistent_template(template_frames[:60]) if len(shots) >= 2 else {"frozen_ratio": 0.0, "boxes": []}
 
     from .packaging import clean_region
 
-    still_pool = ThreadPoolExecutor(max_workers=4)
-    stills = []
     for s in shots:
         smp = samples_by_shot[s.index]
         crop = clean_region(pack["stickers"], s.start, s.end) if pack else None
@@ -231,15 +270,9 @@ def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, 
         layers = overlay_layers(ov, text, template)
         sid = f"shot_{s.index:03d}"
         # key frames: the survey's (the AI's picks and names) when it ran, else the tool's: start, stop, turn, extreme
-        kf = keyframes.get(str(s.index)) or [{"frame": f, "t": round(s.t(f), 3), "role": "first" if f == s.start_frame else "change", "by": "tool"}
-                                              for f in key_frames(track, s.start_frame, s.end_frame)]
-        sheet_frames, sheet_times = key_sheet_frames(video, info, kf, smp)
+        kf = kf_by_shot[s.index]
+        sheet_frames, sheet_times = sheets.get(s.index) or (smp.frames, smp.frame_times)
         shot_sheet(sheet_frames, sheet_times, out / "shots" / f"{sid}.jpg", n=len(sheet_frames) if sheet_frames is not smp.frames else 4)
-        still_w = min(1080, info.display_size[0] or 1080)  # never upscale; rotated video: displayed width
-        # full-resolution first / last frames (remake keyframes): ffmpeg runs in the background while the next shot is measured
-        stills.append(still_pool.submit(extract_frame, video, s.start + min(0.05, s.duration / 4), out / "shots" / f"{sid}_first.jpg", still_w))
-        stills.append(still_pool.submit(extract_frame, video, max(s.start, s.end - min(0.08, s.duration / 4)),
-                                        out / "shots" / f"{sid}_last.jpg", still_w))
         motion = None
         if top(probs)[0] in ("code_render", "screen_capture") or facts.get("graphic_score", 0.0) >= 0.5:
             # rendered picture: element-level motion timeline, key-frame strip and hex palette for a code remake
@@ -275,9 +308,13 @@ def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, 
         dl, dp = top(probs)
         LOG.info("%s %s-%s det=%s(%.0f%%) %s", sid, fmt_time(s.start), fmt_time(s.end), dl, dp * 100, facts.get("temporal_family"))
 
-    for job in stills:
-        job.result()
-    still_pool.shutdown()
+    if isinstance(stills_job, list):
+        for job in stills_job:
+            job.result()
+        still_pool.shutdown()
+    else:
+        stills_job.result()
+    decode_pool.shutdown()
 
     # ---------------- VLM pass ------------------------------------------------------
     # "used" means at least one VLM answer actually came back; "status" says why not otherwise.
