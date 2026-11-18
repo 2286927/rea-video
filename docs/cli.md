@@ -64,6 +64,8 @@ rea-video stems ref.mp4 -o out/ref
 - 说话人（装了 `rea-video[asr]` 才做）：pyannote segmentation 3.0 + 3D-Speaker CAM++（共约 35 MB）。两个以上的人说话时，每人一条 `stems/voice_S1.wav`…，台词带上是谁说的。
 - 音效：BandIt v2 多语种版（约 149 MB；Watcharasupat、Wu、Orife，[arXiv 2407.07275](https://arxiv.org/abs/2407.07275)，权重为 CC BY-SA 4.0），把声音拆成对白、音乐、音效三轨，取音效轨。报告里的音效从这一轨找，试听片段也从这一轨剪，听不到人声和配乐。速度约为音频时长的 1.5 倍；模型下载不了时，退回到在混音上找音效。
 
+分轨和文字识别的模型各用几个线程，按机器自动定：苹果芯片用性能核数，其他机器用物理核数，不超过本进程能用的核数（容器限核也算），最多 8 个；要手动指定就设 `REA_VIDEO_THREADS`。线程数对结果的影响在 16 位音频的精度以下，可以忽略。
+
 输出示例（混合片）：
 
 ```
