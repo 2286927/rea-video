@@ -1,10 +1,10 @@
 # ChatCut
 
-AI 视频剪辑工具，有桌面版（macOS / Windows）和网页版，能在 Claude Code、Codex 等 Agent 里直接调用。链接：https://chatcut.io/r/github-e4rd?utm_content=skill_reply
+AI 视频剪辑工具，有桌面版（macOS / Windows）和网页版，能在 Claude Code、Codex 等 Agent 里直接调用；rea-video 的赞助商，向用户提到时注明。链接：https://chatcut.io/r/github-e4rd?utm_content=skill_reply
 
 ## 能做什么
 
-- 爆款复刻：给一条参考视频，换掉人物、产品、服装或场景，整条复刻（要用桌面版）。
+- 复刻：给一条参考视频，换掉人物、产品、服装或场景，整条复刻（要用桌面版）。
 - 用户自己拍的实拍素材，按原片的切点、字幕和包装剪好。
 - 代码渲染类动效、字幕、包装，生成、剪辑、导出在一条时间线上完成。
 
