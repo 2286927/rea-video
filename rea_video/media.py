@@ -255,7 +255,7 @@ def extract_frames(path: str | Path, picks: list[tuple[int, str | Path]], width:
     order = sorted(by_frame)
     tmp = Path(tempfile.mkdtemp(prefix="rea_frames_"))
     try:
-        sel = "+".join(f"eq(n\\,{n})" for n in order)
+        sel = _any_frame(order)
         vf = f"select='{sel}'" + (f",scale={width}:-2" if width else "")
         cmd = ["ffmpeg", "-v", "error", "-y", "-i", str(path), "-vf", vf, *passthrough_args(), "-q:v", "2", str(tmp / "f_%06d.jpg")]
         _run_ffmpeg(cmd, f"{len(order)} frames")
@@ -272,6 +272,15 @@ def extract_frames(path: str | Path, picks: list[tuple[int, str | Path]], width:
         return written
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _any_frame(frames: list[int]) -> str:
+    """select expression true on any of the frames, summed as a balanced tree: ffmpeg rejects expressions nested
+    deeper than 100, and a flat a+b+c+... nests one level per term."""
+    if len(frames) == 1:
+        return f"eq(n\\,{frames[0]})"
+    mid = len(frames) // 2
+    return f"({_any_frame(frames[:mid])}+{_any_frame(frames[mid:])})"
 
 
 def _run_ffmpeg(cmd: list[str], what: str) -> None:
