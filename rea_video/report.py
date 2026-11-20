@@ -1095,7 +1095,9 @@ def markdown(b: dict) -> str:
     # part one is the breakdown (what is there and how it was made, the same whatever model you use); part two is the
     # remake, planned for one model; the reference detail closes the report
     part1 = ["", T("# 第一部分 · 拆解：这条视频的结构", "# Part one · Breakdown: how this video is built"), ""]
-    L = (_head_md(b) + part1 + _highlights_md(b) + _layers_md(b) + _content_md(b, user=True) + _shotlist_md(b)
+    from .moments import report_md as _moments_md
+
+    L = (_head_md(b) + part1 + _highlights_md(b) + _moments_md(b) + _layers_md(b) + _content_md(b, user=True) + _shotlist_md(b)
          + _cast_md(b) + _visual_md(b, user=True) + packaging_md(b) + _audio_md(b) + _questions_md(b)
          + _plan_md(b) + _appendix_md(b))
     return re.sub(r"\n{3,}", "\n\n", "\n".join(L)).strip() + "\n"
