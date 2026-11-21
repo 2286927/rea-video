@@ -240,7 +240,7 @@ def cmd_probe(args) -> int:
     from .media import require_tools, video_info
     from .probe import provenance
 
-    require_tools()
+    require_tools(("ffprobe",))
     info = video_info(args.video)
     p = provenance(info)
     p.pop("tags", None) if not args.tags else None

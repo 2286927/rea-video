@@ -8,12 +8,14 @@ pip install "rea-video[ocr] @ git+https://github.com/JuneYaooo/rea-video"   # �
 rea-video --help
 ```
 
-**Windows**（`install_skill.sh` 是 bash 脚本，没装 Git Bash 时手动做这三步）：
+**Windows**（`install_skill.sh` 是 bash 脚本，没装 Git Bash 时手动做这几步）：
 
 ```powershell
 winget install Gyan.FFmpeg     # 或 choco install ffmpeg；装完新开一个终端
-pip install "rea-video[ocr] @ git+https://github.com/JuneYaooo/rea-video"
-New-Item -ItemType Junction -Path "$HOME\.claude\skills\rea-video" -Target "<仓库路径>\skills\rea-video"
+git clone https://github.com/JuneYaooo/rea-video; cd rea-video
+pip install ".[ocr]"
+New-Item -ItemType Directory -Force "$HOME\.claude\skills" | Out-Null
+New-Item -ItemType Junction -Path "$HOME\.claude\skills\rea-video" -Target "$PWD\skills\rea-video"
 ```
 
 `Junction` 不需要管理员权限（`SymbolicLink` 需要）；仓库路径带中文或空格不用特殊处理。`rea-video pdf` 会用 `Program Files` 或 `%LOCALAPPDATA%` 下的 Chrome / Edge，装在别处就设 `REA_CHROME`。
