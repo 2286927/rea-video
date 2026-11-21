@@ -47,7 +47,8 @@ SFX_SRC_ZH = LangDict({"vlm": "听到", "effects_stem": "音效轨检出", "dete
                        "review": "看图复核", "merged": "听到 + 信号"},
                       en={"vlm": "heard", "effects_stem": "on the effects track", "deterministic": "signal candidate (low confidence)", "deterministic_anchored": "signal candidate at a text / sticker pop (low confidence)",
                           "review": "agent review", "merged": "heard + signal"})
-ENDING_ZH = LangDict({"natural_end": "自然结束", "fade_out": "淡出", "hard_cut": "硬切断"}, en={"natural_end": "ends naturally", "fade_out": "fades out", "hard_cut": "cut off hard"})
+ENDING_ZH = LangDict({"natural_end": "自然结束", "fade_out": "淡出", "hard_cut": "硬切断", "ends_early": "提前结束"},
+                     en={"natural_end": "ends naturally", "fade_out": "fades out", "hard_cut": "cut off hard", "ends_early": "ends before the video"})
 NARR_ZH = LangDict({"tts": "TTS 合成", "human": "真人", "none": "无", "mixed": "真人 + TTS"}, en={"tts": "TTS", "human": "human", "none": "none", "mixed": "human + TTS"})
 
 _MIX_MARK = "<!--mix-->"
@@ -69,12 +70,12 @@ def _row(*cells) -> str:
     return "| " + " | ".join(_cell(c) for c in cells) + " |"
 
 
-def _table(header: list[str], rows: list[list], fold_title: str | None = None) -> list[str]:
+def _table(header: list[str], rows: list[list], fold_title: str | None = None, fold_over: int = _FOLD_ROWS) -> list[str]:
     """A Markdown table; long ones are folded behind a <details> with `fold_title`."""
     if not rows:
         return []
     L = [_row(*header), "|" + "---|" * len(header)] + [_row(*r) for r in rows]
-    if fold_title and len(rows) > _FOLD_ROWS:
+    if fold_title and len(rows) > fold_over:
         return ["", f'<details class="ref"><summary>{html.escape(fold_title)}</summary>', ""] + L + ["", "</details>"]
     return [""] + L
 
@@ -200,7 +201,7 @@ def _readers(b: dict) -> str:
     if rv.get("shots"):
         by = str(rv.get("by") or "agent")
         # say who looked: an AI assistant's review is not a person checking the shots
-        if by.lower() in _AGENTS:
+        if any(a in by.lower() for a in _AGENTS):
             bits.append(T("AI 助手看图复核 {n} 镜", "AI assistant reviewed {n} shots", n=rv["shots"]))
         else:
             bits.append(T("{by} 看图复核 {n} 镜", "{by} reviewed {n} shots", by=by, n=rv["shots"]))
@@ -502,7 +503,9 @@ def _plan_md(b: dict) -> list[str]:
                  "> ⚠️ {u}: the prompts are still generic drafts. Rewrite them in {m}'s official format (or have the agent write them with that model's "
                  "prompting skill) into `remake/prompts.json`, numbering images in the unit's reference order; `rea-video plan` then checks the format.",
                  u="、".join(drafts), m=m) if drafts else "")
-        sub(T("AI 生成", "AI generation"), [f"**{plan['summary'].split(T('；', '; '))[0]}**", ""] + ([tip, ""] if tip else []) + pre + parts["units"])
+        n_calls = plan.get("calls") or len(plan["units"])
+        sub(T("AI 生成", "AI generation"), [T("**分 {c} 次生成，共 {s:.0f} 秒**", "**{c} generation{p}, {s:.0f} s in total**", c=n_calls, p="" if n_calls == 1 else "s",
+                                              s=sum(float(u.get("duration") or 0) for u in plan["units"])), ""] + ([tip, ""] if tip else []) + parts["units"] + pre)
     if parts.get("drive"):
         steps.append(T("**动作驱动**：舞蹈 / 动作镜头用原片当驱动，见下方「动作驱动」", "**Motion drive**: the dance / action shots are driven from the source, see “Motion drive” below"))
         sub(T("动作驱动", "Motion drive"), parts["drive"])
@@ -532,19 +535,16 @@ def _plan_md(b: dict) -> list[str]:
 
     head = ["", T("# 第二部分 · 复刻方案", "# Part two · Remake plan"), ""]
     if chosen and plan.get("units"):
-        from .generation import check_lines, strategy_name
+        from .generation import check_lines
 
         it = b.get("intent") or {}
-        head += [T("按 **{m}** 排的：{f}。换模型就换方案：`rea-video plan <拆解目录> --model <模型>`。",
-                   "Planned for **{m}**: {f}. Another model gets its own plan: `rea-video plan <folder> --model <model>`.",
-                   m=plan.get("model_name") or plan.get("model"), f=model_facts(plan.get("model"))), "",
-                 T("- 复刻范围：{g}", "- Scope: {g}", g=T("整条都用模型生成", "the whole video by model") if it.get("generate") == "all"
-                   else T("只生成原片里 AI 做的镜头，实拍的自己拍", "only the shots the source generated; filmed shots are filmed")),
-                 T("- 输入方式：{s}", "- Feed: {s}", s=strategy_name(plan.get("strategy", "")))]
+        head += [T("按 **{m}** 排：{f}。想用别的模型直接说，分段、时长和提示词会按那个模型重排。",
+                   "Planned for **{m}**: {f}. Name another model and the split, lengths and prompts are redone for it.",
+                   m=plan.get("model_name") or plan.get("model"), f=model_facts(plan.get("model"), source=False)), ""]
         head += [T("- 换：{f} → {t}", "- Swap: {f} → {t}", f=x["from"] or "—", t=x["to"] or T("参考图", "the reference image"))
                  + (T("（有参考图）", " (with image)") if x.get("image") else "") for x in it.get("swaps") or []]
-        cs = plan.get("checks") or []
-        head += [""] + ([T("**方案检查**", "**Plan checks**"), ""] + check_lines(cs) if cs else [T("方案检查：没有问题。", "Plan checks: nothing to fix.")]) + [""]
+        must = [c for c in plan.get("checks") or [] if c["level"] == "error"]  # warnings are for the agent, printed by `plan`
+        head += ([""] + [T("**生成前要处理**", "**Fix before generating**"), ""] + check_lines(must) if must else []) + [""]
     elif _units_needed(b):
         head += [T("> 还没选视频模型。AI 镜头怎么分段、一次能出多长、能不能直接拿原片当参考、提示词怎么写，每个模型都不一样，"
                    "所以这部分要按你实际用的模型来排：告诉 agent 你用哪个模型或平台（即梦 / Seedance、可灵、Veo、海螺……），"
@@ -679,70 +679,59 @@ def _audio_md(b: dict) -> list[str]:
     w = b.get("whole_video_vlm") or {}
     src = b.get("sound_sources") or {}
     tracks = {t["track"]: t for t in (b.get("audio_plan") or {}).get("plan", [])}
-    L.append("![audio](audio.png)")
-    L.append("")
-    over = [T("响度 {r} dBFS，峰值 {p} dBFS", "loudness {r} dBFS, peak {p} dBFS", r=a.get("rms_dbfs"), p=a.get("peak_dbfs"))]
+    basis: list[str] = ["![audio](audio.png)", ""]  # measurements and evidence, folded under the plain answer
+    basis.append(T("- 响度 {r} dBFS，峰值 {p} dBFS", "- Loudness {r} dBFS, peak {p} dBFS", r=a.get("rms_dbfs"), p=a.get("peak_dbfs")))
     if w.get("mix"):
-        over.append(T("混音：{m}", "mix: {m}", m=w["mix"]))
+        basis.append(T("- 混音：{m}", "- Mix: {m}", m=w["mix"]))
     pc = b.get("per_clip_audio") or {}
     if pc.get("ratio") is not None:
-        over.append(T("每段画面自带声音（切点处背景声跳变 {a}dB，镜头内 {w}dB）", "each clip carries its own sound (background jumps {a}dB at cuts vs {w}dB within shots)", a=pc["at_cuts_db"], w=pc["within_shots_db"])
-                    if pc.get("resets_at_cuts") else
-                    T("声音跨切点连续，是后期整体铺的（切点处背景声变化 {a}dB，镜头内 {w}dB）", "sound runs across cuts, laid in post as one bed (background changes {a}dB at cuts vs {w}dB within shots)", a=pc["at_cuts_db"], w=pc["within_shots_db"]))
-    L.append("- " + semi().join(over))
-    if src.get("summary_zh"):
-        L.append(T("- 来源判断：{s}", "- Sources: {s}", s=src["summary_zh"]))
+        basis.append("- " + (T("每段画面自带声音（切点处背景声跳变 {a}dB，镜头内 {w}dB）", "each clip carries its own sound (background jumps {a}dB at cuts vs {w}dB within shots)", a=pc["at_cuts_db"], w=pc["within_shots_db"])
+                             if pc.get("resets_at_cuts") else
+                             T("声音跨切点连续，是后期整体铺的（切点处背景声变化 {a}dB，镜头内 {w}dB）", "sound runs across cuts, laid in post as one bed (background changes {a}dB at cuts vs {w}dB within shots)", a=pc["at_cuts_db"], w=pc["within_shots_db"])))
 
-    def _source_lines(k: str) -> list[str]:
+    def _source_lines(k: str, title: str) -> list[str]:
+        """The source in one line; its odds, evidence and how to confirm go to the folded basis."""
         v = src.get(k) or {}
         if not v:
             return []
         names = {"voice": VOICE_ZH, "music": MUSIC_ZH, "sfx": SFX_ZH}[k]
         probs = T("，", ", ").join(f"{names.get(kk, kk)} {vv:.0%}" for kk, vv in sorted(v["probs"].items(), key=lambda kv: -kv[1])[:3])
-        out = [T("- 来源：{s}（{p}）", "- Source: {s} ({p})", s=v["source_zh"], p=probs)]
-        out += [f"  - {e}" for e in v.get("evidence", [])[:4]]
-        out += [T("  - 确认方法：{h}", "  - How to confirm: {h}", h=h) for h in v.get("how_to_confirm", [])[:2]]
-        return out
+        basis.append(f"- {title}{_colon()}{v['source_zh']}（{probs}）" if lang() == "zh" else f"- {title}: {v['source_zh']} ({probs})")
+        basis.extend(f"  - {e}" for e in v.get("evidence", [])[:4])
+        basis.extend(T("  - 确认方法：{h}", "  - How to confirm: {h}", h=h) for h in v.get("how_to_confirm", [])[:2])
+        return [T("- 来源：{s}", "- Source: {s}", s=v["source_zh"])]
 
     # voice
     v = a.get("voice", {})
     n = w.get("narration") or {}
-    L += ["", T("**人声**", "**Voice**"), ""]
-    if v.get("present"):
-        bits = [T("占 {r:.0%} 时长", "{r:.0%} of the duration", r=v.get("ratio", 0))]
+    who = _speakers_md(b)
+    if v.get("present") or who or (b.get("speech") or {}).get("lines"):
+        L += [T("**人声**", "**Voice**"), ""]
+        bits = []
         if n.get("type") and n["type"] != "none":
             bits.append(NARR_ZH.get(n["type"], n["type"]) + (T("，{v}", ", {v}", v=n["voice"]) if n.get("voice") else "") + (T("，{s}", ", {s}", s=n["style"]) if n.get("style") else ""))
-        if v.get("f0_median_hz"):
-            bits.append(T("基频约 {f}Hz（{g}）", "pitch about {f}Hz ({g})", f=v["f0_median_hz"], g=GENDER_ZH.get(v.get("gender_hint"), T("性别不确定", "gender unclear"))))
+        if v.get("gender_hint") in GENDER_ZH:
+            bits.append(GENDER_ZH[v["gender_hint"]])
         if v.get("sung"):
             bits.append(T("是唱的", "sung"))
-        L.append("- " + semi().join(bits))
-        L += _speakers_md(b)
-        L += _source_lines("voice")
+        if bits:
+            L.append("- " + semi().join(bits))
+        if v.get("f0_median_hz"):
+            basis.append(T("- 人声占 {r:.0%} 时长，基频约 {f}Hz", "- Voice on {r:.0%} of the duration, pitch about {f}Hz", r=v.get("ratio", 0), f=v["f0_median_hz"]))
+        L += who
+        L += _source_lines("voice", T("人声来源", "Voice source"))
         vs = (src.get("voice") or {}).get("source")
         if vs in _USER_VOICE_HOW:
             L.append(T("- 复刻：{h}", "- Remake: {h}", h=_USER_VOICE_HOW[vs]))
         elif tracks.get("voice"):
             L.append(T("- 复刻：{h}", "- Remake: {h}", h=_plain_how(tracks["voice"]["how"])))
-        if entities.script(b):
-            L.append(T("- 台词见「内容与结构」的脚本表", "- Lines are in the script table under “Content and structure”"))
-    else:
-        who = _speakers_md(b)
-        if who or (b.get("speech") or {}).get("lines"):
-            # the mix is mostly music, so the voice measure says "little"; the separated voice track still has lines on it
-            L.append(T("- 占时长很少（混音里以配乐为主），在分离出的人声干声上能听到台词",
-                       "- A small share of the duration (the mix is mostly music); lines can be heard on the separated voice track"))
-            L += who
-            if entities.script(b):
-                L.append(T("- 台词见「内容与结构」的脚本表", "- Lines are in the script table under “Content and structure”"))
-        else:
-            L.append(T("- 无 / 很少", "- None / very little"))
+        L.append("")
 
     # music
     mu = a.get("music", {})
     vm = w.get("music") or {}
-    L += ["", T("**背景音乐**", "**Music**"), ""]
     if mu.get("present") or vm.get("present"):
+        L += [T("**配乐**", "**Music**"), ""]
         if vm.get("song_guess"):
             L.append(T("- 歌曲：{s}", "- Song: {s}", s=vm["song_guess"]))
         desc = [x for x in (vm.get("style"), vm.get("genre"), vm.get("mood")) if x]
@@ -757,46 +746,43 @@ def _audio_md(b: dict) -> list[str]:
                      + (T("（唱的就是画面内容）", " (the lyrics describe the video itself)") if vm.get("lyrics_match_content") else ""))
         tempo = []
         if mu.get("no_beat"):
-            tempo.append(T("无明显节拍（持续音，没有打击成分）", "no clear beat (a held tone, nothing percussive)"))
+            tempo.append(T("无明显节拍", "no clear beat"))
         if mu.get("tempo_bpm"):
-            tempo.append(T("{bpm} BPM（也可能是 {alt}）", "{bpm} BPM (or {alt})", bpm=mu["tempo_bpm"], alt="/".join(str(t) for t in mu.get("tempo_alternatives", []))) if mu.get("tempo_alternatives")
-                         else f"{mu['tempo_bpm']} BPM")
+            tempo.append(f"{mu['tempo_bpm']:.0f} BPM")
         key = mu.get("key") or {}
         if key:
-            tempo.append(T("调性 {t} {m}（置信 {c}）", "key {t} {m} (confidence {c})", t=key.get("tonic"), m=key.get("mode"), c=key.get("confidence")))
-        if mu.get("present"):
-            tempo.append(T("占 {r:.0%} 时长（{s}–{e}s）", "{r:.0%} of the duration ({s}–{e}s)", r=mu.get("ratio", 0), s=mu.get("start"), e=mu.get("end")))
-        if mu.get("section_changes"):
-            tempo.append(T("段落变化点 {p}", "section changes at {p}", p=", ".join(str(t) + "s" for t in mu["section_changes"][:8])))
+            tempo.append(f"{key.get('tonic')} {key.get('mode')}")
+        if a.get("beat_synced_edit"):
+            tempo.append(T("切镜卡在节拍上", "cuts land on the beat"))
         ending = vm.get("ending") or (src.get("music") or {}).get("ending")
         if ending:
             tempo.append(T("片尾{e}", "ending: {e}", e=ENDING_ZH.get(ending, ending)))
         if tempo:
             L.append(T("- 节奏：", "- Tempo: ") + semi().join(tempo))
+        detail = []
+        if mu.get("tempo_alternatives"):
+            detail.append(T("速度也可能是 {alt} BPM", "tempo may also be {alt} BPM", alt="/".join(str(t) for t in mu["tempo_alternatives"])))
+        if mu.get("present"):
+            detail.append(T("配乐占 {r:.0%} 时长（{s}–{e}s）", "music on {r:.0%} of the duration ({s}–{e}s)", r=mu.get("ratio", 0), s=mu.get("start"), e=mu.get("end")))
+        if mu.get("section_changes"):
+            detail.append(T("段落变化点 {p}", "section changes at {p}", p=", ".join(str(t) + "s" for t in mu["section_changes"][:8])))
         if "cuts_on_beat_ratio" in a:
-            L.append(T("- 剪辑与节拍：{r:.0%} 的切点落在节拍上（随机约 {c:.0%}）", "- Cuts vs beat: {r:.0%} of cuts land on a beat (chance: about {c:.0%})",
-                       r=a["cuts_on_beat_ratio"], c=a["cuts_on_beat_chance"]) + (T(" → **卡点剪辑**", " → **beat-synced edit**") if a.get("beat_synced_edit") else ""))
-        L += _source_lines("music")
+            detail.append(T("{r:.0%} 的切点落在节拍上（随机约 {c:.0%}）", "{r:.0%} of cuts land on a beat (chance: about {c:.0%})", r=a["cuts_on_beat_ratio"], c=a["cuts_on_beat_chance"]))
+        if detail:
+            basis.append("- " + semi().join(detail))
+        L += _source_lines("music", T("配乐来源", "Music source"))
         if tracks.get("music"):
             L.append(T("- 复刻：{h}", "- Remake: {h}", h=_plain_how(tracks["music"]["how"])))
+        L.append("")
     elif mu.get("steady_tone"):
-        L.append(T("- 不是音乐：整段是一个持续单音（约 {hz:.0f} Hz），没有旋律、和声和节拍，像测试音、提示音或电流声",
-                   "- Not music: one held pitch (about {hz:.0f} Hz) with no melody, harmony or beat, like a test tone, a beep or mains hum",
-                   hz=mu["steady_tone"]["hz"]))
-    else:
-        L.append(T("- 未检测到持续的音乐床", "- No sustained music bed detected"))
+        L += [T("**持续单音**", "**Held tone**"), "",
+              T("- 不是音乐：整段是一个持续单音（约 {hz:.0f} Hz），像测试音、提示音或电流声",
+                "- Not music: one held pitch (about {hz:.0f} Hz), like a test tone, a beep or mains hum", hz=mu["steady_tone"]["hz"]), ""]
 
-    # sfx
+    # sfx: only when there are some, one playable row per distinct sound
     sfx = (b.get("audio_plan") or {}).get("sfx_merged", [])
-    n_maybe = sum(1 for e in sfx if e.get("confidence") == "low")
-    count = (T("{n}，其中 {m} 处是待确认的信号候选", "{n}, of which {m} are unconfirmed signal candidates", n=len(sfx), m=n_maybe)
-             if n_maybe and n_maybe < len(sfx) else T("{n}，都是待确认的信号候选", "{n}, all unconfirmed signal candidates", n=len(sfx)) if n_maybe else str(len(sfx)))
     all_groups = (b.get("audio_plan") or {}).get("sfx_groups") or []
     groups = [g for g in all_groups if not g.get("in_scene")]
-    if all_groups:
-        n_add = sum(g["count"] for g in groups)
-        count = (T("{n} 处，{k} 种声音", "{n} hits, {k} distinct sounds", n=n_add, k=len(groups)) if len(groups) < n_add else str(n_add))
-    L += ["", T("**音效**", "**Sound effects**") + (f"（{count}）" if sfx and lang() == "zh" else (f" ({count})" if sfx else "")), ""]
 
     def group_rows(gs: list[dict]) -> list[list]:
         rows = []
@@ -808,48 +794,35 @@ def _audio_md(b: dict) -> list[str]:
                          join(f"{t:.1f}s" for t in g["times"]), semi().join(on[:3]) or "—"])
         return rows
 
-    head = [T("声音", "Sound"), T("试听", "Listen"), T("类型", "Type"), T("次数", "Times used"), T("出现在", "At"), T("对应画面", "On screen")]
-    if all_groups:
-        # one row per distinct sound: listen once, then where it is used
-        if groups:
-            L += _table(head, group_rows(groups), fold_title=T("全部 {n} 种音效（可试听）", "all {n} distinct effects (with audio)", n=len(groups)))
-            L.append("")
-            L.append(T("- 复刻：每种声音先点「试听」听一下（已单独分离出来，听不到人声和配乐），到剪辑软件的音效库里找一个同类的，按「出现在」的时间点放到每一处",
-                       "- Remake: play each sound first (separated out, without voice or music), find one similar effect in the editor's library, and place it at every time listed under “At”"))
-        else:
-            L.append(T("- 没有找到后期加的音效", "- No effects added in the edit were found"))
-    elif sfx:
+    if groups:
+        n_add = sum(g["count"] for g in groups)
+        count = T("{n} 处，{k} 种声音", "{n} hits, {k} distinct sounds", n=n_add, k=len(groups)) if len(groups) < n_add else str(n_add)
+        L += [T("**音效**（{c}）", "**Sound effects** ({c})", c=count)]
+        L += _table([T("声音", "Sound"), T("试听", "Listen"), T("类型", "Type"), T("次数", "Times used"), T("出现在", "At"), T("对应画面", "On screen")],
+                    group_rows(groups), fold_title=T("全部 {n} 种音效（可试听）", "all {n} distinct effects (with audio)", n=len(groups)))
+        L += ["", T("- 复刻：听一下每种声音，到剪辑软件的音效库找同类的，放到「出现在」的时间点",
+                    "- Remake: play each sound, find a similar one in your editor's library and place it at the times under “At”"), ""]
+    elif sfx and not all_groups:
+        has_clip = any(e.get("clip") for e in sfx)
         rows = []
-        has_clip = any(e.get("clip") for e in sfx)  # cut from the original sound: hear it, then find a similar one
         for e in sfx[:60]:
             on = (e.get("on") or {}).get("what") or e.get("sync_with", T("切点", "cut") if e.get("sync_with_visual") else "")
             clip = [f"[{T('试听', 'listen')}]({e['clip']})" if e.get("clip") else "—"] if has_clip else []
-            rows.append([f"{float(e.get('t', 0)):.2f}s", *clip, e.get("type", ""), e.get("description", "") or e.get("anchor", ""), on, SFX_SRC_ZH.get(e.get("source"), e.get("source", ""))])
-        L += _table([T("时间", "Time"), *([T("试听", "Listen")] if has_clip else []), T("类型", "Type"), T("描述", "Description"), T("对应画面", "On screen"), T("依据", "Basis")], rows,
-                    fold_title=T("全部 {n} 处音效", "all {n} sound effects", n=len(rows)) + (T("（可试听）", " (with audio)") if has_clip else ""))
-        L.append("")
-        L += _source_lines("sfx")
-        alone = any(e.get("source") == "effects_stem" for e in sfx)
-        L.append(T("- 复刻：先点「试听」听这一下是什么声{a}，再到剪辑软件的音效库里找同类音效，按时间点放；对应画面一栏写了它卡在什么动作上",
-                   "- Remake: press “listen” to hear what each one is{a}, then take a similar effect from the editor's sound library and place it at that time; “On screen” says what each one lands on",
-                   a=T("（已单独分离出来，听不到人声和配乐）", " (separated out, without the voice and music)") if alone
-                   else T("（片段从原声里剪的，会带着人声和配乐）", " (cut from the original sound, so voice and music are in it)")))
-    else:
-        L.append(T("- 没有找到明显的音效（人声和音乐下面很轻的音效可能漏掉）",
-                   "- No clear sound effects found (very quiet ones under the voice and music may be missed)"))
+            rows.append([f"{float(e.get('t', 0)):.2f}s", *clip, e.get("type", ""), e.get("description", "") or e.get("anchor", ""), on])
+        L += [T("**音效**（{n} 处）", "**Sound effects** ({n})", n=len(sfx))]
+        L += _table([T("时间", "Time"), *([T("试听", "Listen")] if has_clip else []), T("类型", "Type"), T("描述", "Description"), T("对应画面", "On screen")], rows,
+                    fold_title=T("全部 {n} 处音效", "all {n} sound effects", n=len(rows)))
+        _source_lines("sfx", T("音效来源", "Effects source"))
+        L += ["", T("- 复刻：到剪辑软件的音效库找同类音效，按时间点放", "- Remake: take a similar effect from your editor's library and place it at that time"), ""]
 
-    # ambience + files
     amb = w.get("ambience") or (tracks.get("ambience") or {}).get("what")
-    if amb or tracks.get("ambience"):
-        L += ["", T("**环境声**", "**Ambience**"), "", f"- {amb or '—'}" + (T("；复刻：{h}", "; remake: {h}", h=tracks["ambience"]["how"]) if tracks.get("ambience") else "")]
-    st = b.get("stems") or {}
-    if st.get("ok"):
-        L += ["", T("- 分离出的音轨：`stems/original.wav`（原声）、`stems/vocals.wav`（人声干声）、`stems/music.wav`（配乐 + 环境声）",
-                    "- Separated stems: `stems/original.wav` (original), `stems/vocals.wav` (dry voice), `stems/music.wav` (music + ambience)")
-              + (T("、`stems/effects.wav`（音效轨）", ", `stems/effects.wav` (effects track)") if st.get("effects") else ""),
-              _STEMS_MARK]
+    if amb:
+        basis.append(T("- 环境声：{a}", "- Ambience: {a}", a=amb))
     if (b.get("audio_plan") or {}).get("mix"):
-        L.append(T("- 混音复刻：{m}", "- Mix for the remake: {m}", m=b["audio_plan"]["mix"]))
+        L += [T("**混音**", "**Mix**"), "", f"- {b['audio_plan']['mix']}", ""]
+    if (b.get("stems") or {}).get("ok") and _stem_tracks(b):
+        L += [T("**听分轨**", "**Listen to the tracks**"), "", _STEMS_MARK, ""]
+    L += [f'<details class="ref"><summary>{html.escape(T("声音的测量和判断依据", "Sound measurements and evidence"))}</summary>', ""] + basis + ["", "</details>"]
     return L
 
 
@@ -878,11 +851,6 @@ def packaging_md(b: dict) -> list[str]:
     if not cues and not stickers:
         L.append(T("- 没有检出后期叠加的文字或贴纸", "- No overlaid text or stickers detected")
                  + (T("（未开 OCR，文字层没有分析）", " (OCR off, text layer not analysed)") if not (b.get("analysis") or {}).get("ocr", True) else ""))
-    files = pack.get("files") or {}
-    if files:
-        L.append(T("- 导出：", "- Exports: ") + join(f"`{v}`" for v in files.values())
-                 + T("（SRT 是字幕时间轴；ASS 带颜色、描边、位置和入场动画，字体需要换成原片字体；timeline.json 是完整时间轴）",
-                     " (SRT is the subtitle timeline; ASS carries colour, outline, position and entrance animation, swap in the original font; timeline.json is the full timeline)"))
     if cues:
         sfx_by_ref: dict[str, list[str]] = {}
         for e in [x for x in (b.get("audio_plan") or {}).get("sfx_merged", []) if not x.get("in_scene")]:  # the picture's own sound is not a cue
@@ -897,7 +865,7 @@ def packaging_md(b: dict) -> list[str]:
             kind = c["kind_zh"] + (T("·跟随物体", " · follows an object") if c.get("follows") else "")
             rows.append([f"{c['t0']:.2f}–{c['t1']:.2f}s", kind, c["text"].replace("/", " ⏎ ")[:40], c.get("style_zh", ""), anim or "—", join(sfx_by_ref.get(c["id"], [])) or "—"])
         L += _table([T("时间", "Time"), T("类型", "Kind"), T("文字", "Text"), T("样式", "Style"), T("入场 / 出场", "In / out"), T("音效", "SFX")], rows,
-                    fold_title=T("文字时间轴（{n} 条）", "text timeline ({n} rows)", n=len(rows)))
+                    fold_title=T("文字时间轴（{n} 条）", "text timeline ({n} rows)", n=len(rows)), fold_over=0)
     if stickers:
         rows = []
         for st in stickers:
@@ -928,10 +896,10 @@ def packaging_md(b: dict) -> list[str]:
         for e in fx:
             L.append(f"- {e.get('t', '')}s {e.get('kind', '')}「{e.get('text', '')}」{e.get('style', '')} {e.get('animation', '')}")
         L += ["", "</details>"]
-    L += ["", T("复刻：字幕和花字用 `packaging/overlays.ass` 直接压制（ffmpeg -vf ass=overlays.ass），或按 timeline.json 在剪映 / Remotion 里重建；"
-                "贴纸和动图要找同款素材（表情包库 / GIF 库），截图在 packaging/ 下。",
-                "Remake: burn subtitles and styled text in with `packaging/overlays.ass` (ffmpeg -vf ass=overlays.ass), or rebuild them from timeline.json in CapCut / Remotion; "
-                "stickers and GIFs need matching assets (meme / GIF libraries), crops are under packaging/.")]
+    L += ["", T("- 复刻：字幕文件 `packaging/subtitles.srt` 可以直接导入剪映，换成自己的话；带样式的版本是 `packaging/overlays.ass`"
+                + ("；贴纸和动图去素材库找同款" if stickers else ""),
+                "- Remake: import `packaging/subtitles.srt` into your editor and put in your own words; the styled version is `packaging/overlays.ass`"
+                + ("; find matching stickers and GIFs in an asset library" if stickers else ""))]
     return L
 
 
@@ -982,6 +950,7 @@ def _clock(t: float) -> str:
 
 def _shotlist_md(b: dict) -> list[str]:
     told = narrative.shot_roles(b)
+    mixed = len({r["base"]["label"] for r in b["shots"]}) > 1  # one kind throughout is already said at the top
     rows = []
     for r in b["shots"]:
         base = r["base"]
@@ -990,15 +959,12 @@ def _shotlist_md(b: dict) -> list[str]:
         says = (n.get("role_zh") or "") + (_colon() if n.get("role_zh") and n.get("point") else "") + (n.get("point") or "")
         a = r.get("assets") or {}
         pic = a.get("first_frame") or a.get("sheet")  # one frame reads at thumbnail size; the contact sheet is in the appendix
-        rows.append([r["index"], f"![#{r['index']}]({pic})" if pic else "—", _clock(r["start"]), f"{r['duration']:.1f}s", *([says[:48] + ("…" if len(says) > 48 else "") or "—"] if told else []),
-                     desc[:40] + ("…" if len(desc) > 40 else "") or "—", CAMERA_ZH.get(r["features"].get("camera", "unknown"), "—"), _layers(r),
-                     f"{base['label_zh']} {base['confidence']:.0%}", _origin(r, brief=True)])
-    return ["", T("## 分镜表", "## Shot list"), "",
-            T("「画面」「运镜」「叠加层」是画面里看得到的；「制作方式」「素材来源」是工具推断的，依据见附录逐镜取证。",
-              "Picture, Camera and Overlays are what is visible on screen; Made with and Material are the tools' inference, with the basis in the shot-by-shot appendix.")] + _table(
-        ["#", T("截图", "Frames"), T("时间", "Time"), T("时长", "Length"), *([T("在讲什么", "What it says")] if told else []),
-         T("画面", "Picture"), T("运镜", "Camera"), T("叠加层", "Overlays"),
-         T("制作方式（推断）", "Made with (inferred)"), T("素材来源（推断）", "Material (inferred)")], rows)
+        rows.append([r["index"], f"![#{r['index']}]({pic})" if pic else "—", f"{_clock(r['start'])} · {r['duration']:.1f}s", *([says[:60] + ("…" if len(says) > 60 else "") or "—"] if told else []),
+                     desc[:60] + ("…" if len(desc) > 60 else "") or "—", CAMERA_ZH.get(r["features"].get("camera", "unknown"), "—"),
+                     *([base["label_zh"]] if mixed else [])])
+    return ["", T("## 分镜表", "## Shot list")] + _table(
+        ["#", T("截图", "Frame"), T("时间", "Time"), *([T("在讲什么", "What it says")] if told else []),
+         T("画面", "Picture"), T("运镜", "Camera"), *([T("制作方式", "Made with")] if mixed else [])], rows)
 
 
 def _questions_md(b: dict) -> list[str]:
@@ -1104,7 +1070,8 @@ def markdown(b: dict, credit: bool = True) -> str:
          + _plan_md(b) + _appendix_md(b))
     if credit:
         L += ["", "---", "", T("由 [REA-VIDEO]({u}) 生成 · {u}", "Made with [REA-VIDEO]({u}) · {u}", u=PROJECT_URL)]
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(L)).strip() + "\n"
+    text = re.sub(r"\[[\w.-]*agent 看图\]", "[AI 看图]", "\n".join(L))  # who reviewed it is in breakdown.json
+    return re.sub(r"\n{3,}", "\n\n", text).strip() + "\n"
 
 
 # ------------------------------------------------------------------ HTML ------------------------------------------
@@ -1314,10 +1281,15 @@ def _stems_html(b: dict) -> str:
     if not (b.get("stems") or {}).get("ok"):
         return ""
     return "<div class='stems'>" + "".join(
-        f"<div>{name}{_colon()}<audio controls preload='none' src='stems/{f}'></audio></div>"
-        for f, name in (("original.wav", T("原声", "original")), ("vocals.wav", T("人声干声", "dry voice")), ("music.wav", T("配乐 + 环境声", "music + ambience")),
-                        *((("effects.wav", T("音效", "effects")),) if (b.get("stems") or {}).get("effects") else ()),
-                        *_speaker_tracks(b))) + "</div>"
+        f"<div>{name}{_colon()}<audio controls preload='none' src='stems/{f}'></audio></div>" for f, name in _stem_tracks(b)) + "</div>"
+
+
+def _stem_tracks(b: dict) -> list[tuple[str, str]]:
+    """The separated tracks worth listening to: only what this video has. Effects are played one by one in their table."""
+    a, w = b.get("audio") or {}, b.get("whole_video_vlm") or {}
+    voice = (a.get("voice") or {}).get("present") or (b.get("speech") or {}).get("lines")
+    music = (a.get("music") or {}).get("present") or (w.get("music") or {}).get("present")
+    return ([("vocals.wav", T("人声", "voice")), *_speaker_tracks(b)] if voice else []) + ([("music.wav", T("配乐", "music"))] if music else [])
 
 
 def _speaker_tracks(b: dict) -> list[tuple[str, str]]:
