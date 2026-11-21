@@ -290,7 +290,7 @@ def _pitch(x: np.ndarray, ranges: list[tuple[float, float]]) -> dict:
         # The diarization model can report a turn ending in padding past the real audio.
         start = max(0, int(a * SR))
         end = min(len(x), int(b * SR))
-        for s in range(start, end - frame + 1, frame):
+        for s in range(start, end - frame, frame):
             seg = x[s:s + frame]
             if np.sqrt(np.mean(seg ** 2)) < 0.01:
                 continue
