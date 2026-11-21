@@ -53,6 +53,8 @@ NARR_ZH = LangDict({"tts": "TTS 合成", "human": "真人", "none": "无", "mixe
 _MIX_MARK = "<!--mix-->"
 _STEMS_MARK = "<!--stems-->"
 _FOLD_ROWS = 12  # tables longer than this are folded into <details>
+PROJECT_URL = "https://github.com/JuneYaooo/rea-video"
+PROJECT_PATH = PROJECT_URL.removeprefix("https://")
 
 
 def _colon() -> str:
@@ -1090,7 +1092,7 @@ def _appendix_md(b: dict) -> list[str]:
     return L
 
 
-def markdown(b: dict) -> str:
+def markdown(b: dict, credit: bool = True) -> str:
     # what it is and why it works, how it is told and cut, how to remake it, then the reference detail
     # part one is the breakdown (what is there and how it was made, the same whatever model you use); part two is the
     # remake, planned for one model; the reference detail closes the report
@@ -1100,6 +1102,8 @@ def markdown(b: dict) -> str:
     L = (_head_md(b) + part1 + _highlights_md(b) + _moments_md(b) + _layers_md(b) + _content_md(b, user=True) + _shotlist_md(b)
          + _cast_md(b) + _visual_md(b, user=True) + packaging_md(b) + _audio_md(b) + _questions_md(b)
          + _plan_md(b) + _appendix_md(b))
+    if credit:
+        L += ["", "---", "", T("由 [REA-VIDEO]({u}) 生成 · {u}", "Made with [REA-VIDEO]({u}) · {u}", u=PROJECT_URL)]
     return re.sub(r"\n{3,}", "\n\n", "\n".join(L)).strip() + "\n"
 
 
@@ -1142,6 +1146,10 @@ def _md_to_html(lines: list[str], b: dict) -> str:
     para: list[str] = []
     in_code = False
     in_section = False
+    in_hero = False
+    seen_h1 = False
+    stats_done = False
+    n_section = 0
     skip_table = False
 
     def close_lists(to_indent: int = -1):
@@ -1152,13 +1160,16 @@ def _md_to_html(lines: list[str], b: dict) -> str:
         nonlocal table, para, skip_table
         close_lists()
         if para:
-            out.append("<p>" + "<br>".join(para) + "</p>")
+            if in_hero:
+                out.append("<div class='says'>" + "".join(_hero_line(x) for x in para) + "</div>")
+            else:
+                out.append("<p>" + "<br>".join(para) + "</p>")
             para = []
         if table:
             if not skip_table:
                 head, *body = table
-                out.append("<table><thead><tr>" + "".join(f"<th>{_inline(c.strip())}</th>" for c in head.strip().strip("|").split("|")) + "</tr></thead><tbody>"
-                           + "".join("<tr>" + "".join(f"<td>{_inline(c.strip())}</td>" for c in row.strip().strip("|").split("|")) + "</tr>" for row in body) + "</tbody></table>")
+                out.append("<div class='tw'><table><thead><tr>" + "".join(f"<th>{_inline(c.strip())}</th>" for c in head.strip().strip("|").split("|")) + "</tr></thead><tbody>"
+                           + "".join("<tr>" + "".join(f"<td>{_inline(c.strip())}</td>" for c in row.strip().strip("|").split("|")) + "</tr>" for row in body) + "</tbody></table></div>")
             table = []
             skip_table = False
 
@@ -1195,10 +1206,29 @@ def _md_to_html(lines: list[str], b: dict) -> str:
             flush()
             level = len(line) - len(line.lstrip("#"))
             text = _inline(line[level:].strip())
-            if level == 2:
+            if level == 1:
                 if in_section:
                     out.append("</section>")
-                out.append(f"<section class='card'><h2>{text}</h2>")
+                    in_section = False
+                if in_hero:
+                    out.append("</header>")
+                    in_hero = False
+                if not seen_h1:
+                    title, _, name = text.partition(T("：", ": "))
+                    out.append(f"<header class='hero'><h1>{title}</h1>" + (f"<div class='src'>{name}</div>" if name else ""))
+                    in_hero = True
+                else:
+                    no, _, title = text.partition(" · ")
+                    out.append(f"<div class='part'><span>{no}</span><h1>{title or no}</h1></div>")
+                seen_h1 = True
+            elif level == 2:
+                if in_section:
+                    out.append("</section>")
+                if in_hero:
+                    out.append("</header>")
+                    in_hero = False
+                n_section += 1
+                out.append(f"<section class='card' id='s{n_section}'><h2>{text}</h2>")
                 in_section = True
             else:
                 out.append(f"<h{level}>{text}</h{level}>")
@@ -1214,6 +1244,10 @@ def _md_to_html(lines: list[str], b: dict) -> str:
         if m:
             if table or para:
                 flush()
+            if in_hero and not stats_done:  # the hero's first bullet (length, frame, shots) becomes the stat row
+                stats_done = True
+                out.append(_hero_stats(b))
+                continue
             indent = len(m.group(1))
             tag = "ol" if re.match(r"^\s*\d+\.", line) else "ul"
             if lists and lists[-1][1] == indent:
@@ -1239,7 +1273,34 @@ def _md_to_html(lines: list[str], b: dict) -> str:
     flush()
     if in_section:
         out.append("</section>")
+    if in_hero:
+        out.append("</header>")
     return "\n".join(out)
+
+
+def _hero_line(x: str) -> str:
+    """`<b>label</b>：text` from the report head, as a label above its sentence."""
+    m = re.fullmatch(r"<b>([^<]+)</b>\s*[：:]\s*(.*)", x)
+    return f"<div class='say'><span>{m.group(1)}</span><p>{m.group(2)}</p></div>" if m else f"<p>{x}</p>"
+
+
+def _hero_stats(b: dict) -> str:
+    s, src = b["summary"], b["source"]
+    orient = T("竖屏", "Vertical") if src["height"] > src["width"] else T("横屏", "Horizontal") if src["width"] > src["height"] else T("方屏", "Square")
+    cells = ((T("时长", "Length"), _mmss(src["duration"])), (orient, src["aspect_ratio"]), (T("镜头", "Shots"), s["shots"]),
+             (T("平均镜长", "Avg shot"), f"{float(s['avg_shot_s']):.1f}s"))
+    return "<div class='stats'>" + "".join(f"<div><b>{html.escape(str(v))}</b><span>{k}</span></div>" for k, v in cells) + "</div>"
+
+
+def _toc(body: str) -> str:
+    items = []
+    for m in re.finditer(r"<div class='part'><span>([^<]*)</span>|<section class='card' id='(s\d+)'><h2>(.*?)</h2>", body):
+        if m.group(2):
+            label = re.split(r"[（(]", re.sub(r"<[^>]+>", "", m.group(3)))[0].strip()
+            items.append(f"<a href='#{m.group(2)}'>{label}</a>")
+        else:
+            items.append(f"<div>{m.group(1)}</div>")
+    return "<nav class='toc' aria-label='contents'>" + "".join(items) + "</nav>"
 
 
 def _mix_bar(b: dict) -> str:
@@ -1265,33 +1326,74 @@ def _speaker_tracks(b: dict) -> list[tuple[str, str]]:
     return [(f, speaker_label(b, sid)) for sid, f in ((b.get("speakers") or {}).get("tracks") or {}).items()]
 
 
+_WATERMARK = ("url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='520' height='300'%3E"
+              "%3Cg transform='rotate(-24 260 150)' fill='{c}' text-anchor='middle' font-family='Helvetica,Arial,sans-serif'%3E"
+              "%3Ctext x='260' y='146' font-size='25' font-weight='800' letter-spacing='5'%3EREA-VIDEO%3C/text%3E"
+              "%3Ctext x='260' y='170' font-size='11' letter-spacing='.6'%3Egithub.com/JuneYaooo/rea-video%3C/text%3E%3C/g%3E%3C/svg%3E\")")
+
 _CSS = """
-:root{--bg:#fafaf9;--fg:#1c1917;--muted:#78716c;--card:#fff;--line:#e7e5e4;--accent:#0d9488}
-@media (prefers-color-scheme:dark){:root{--bg:#1c1917;--fg:#f5f5f4;--muted:#a8a29e;--card:#292524;--line:#44403c}}
-body{margin:0;padding:24px 16px;background:var(--bg);color:var(--fg);font:15px/1.6 -apple-system,"PingFang SC","Noto Sans CJK SC",sans-serif}
-main{max-width:1100px;margin:auto} h1{font-size:22px} h2{font-size:18px;margin:4px 0 10px} h3{font-size:15px;margin:16px 0 6px} h4{font-size:13px;color:var(--muted);margin:10px 0 2px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:14px 0}
-.mix{display:flex;height:30px;border-radius:6px;overflow:hidden;margin:12px 0} .bar{color:#fff;font-size:12px;padding:6px;white-space:nowrap;overflow:hidden}
-img{max-width:100%;border-radius:6px} img.sb{display:block;margin:8px 0}
-table{width:100%;border-collapse:collapse;font-size:13px;margin:8px 0;display:block;overflow-x:auto} th,td{border-bottom:1px solid var(--line);padding:5px 8px;text-align:left;vertical-align:top;min-width:3.2em} th{color:var(--muted);font-weight:600}
+:root{--bg:#f4f2ec;--fg:#191b20;--muted:#6b6d75;--card:#fffefb;--line:#e3dfd5;--soft:#f1eee6;--accent:#e8452c;--accent-soft:#fdeae5;--ink:#14161b;--wm:WM_LIGHT;--wm-hero:WM_HERO}
+@media (prefers-color-scheme:dark){:root{--bg:#101216;--fg:#ecebe7;--muted:#9a9ca5;--card:#191c22;--line:#2b2f37;--soft:#22262d;--accent:#ff6b4f;--accent-soft:#3a211c;--ink:#07080a;--wm:WM_DARK;--wm-hero:none}}
+*{box-sizing:border-box} html{scroll-behavior:smooth;scroll-padding-top:72px}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.72 -apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC","Microsoft YaHei","Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+.wm{position:fixed;inset:0;z-index:30;pointer-events:none;background-image:var(--wm);background-size:520px 300px}
+.brand{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:12px;height:54px;padding:0 24px;background:var(--ink);color:#f5f3ee}
+.brand .logo{color:#fff;font-weight:800;letter-spacing:.14em;font-size:14px} .brand .logo i{display:inline-block;width:9px;height:9px;margin-right:9px;border-radius:50%;background:#ff5a3c}
+.brand span{color:#a4a6ae;font-size:12px} .brand .path{margin-left:auto;color:#d9d7d1;font-size:12px}
+.layout{display:grid;grid-template-columns:216px minmax(0,1fr);gap:32px;max-width:1320px;margin:auto;padding:24px}
+.toc{position:sticky;top:78px;align-self:start;max-height:calc(100vh - 100px);overflow:auto;font-size:13px}
+.toc div{margin:16px 0 5px;color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.06em} .toc a{display:block;padding:5px 10px;border-left:2px solid var(--line);color:var(--fg);line-height:1.4}
+.toc a:hover{border-color:var(--accent);color:var(--accent);text-decoration:none}
+main{min-width:0}
+.hero{padding:34px 36px 30px;border-radius:16px;background:var(--wm-hero) 0 0/520px 300px,var(--ink);color:#f5f3ee}
+.hero h1{margin:0;color:#ff7a5f;font-size:13px;font-weight:700;letter-spacing:.1em} .hero .src{margin-top:3px;color:#8f919a;font-size:12px;word-break:break-all}
+.says{margin:20px 0 22px} .say span{display:block;color:#9b9da6;font-size:12px} .say p{margin:2px 0 14px;font-size:17px;line-height:1.55}
+.say:first-child p{font-size:27px;line-height:1.38;font-weight:700;letter-spacing:-.01em;color:#fff}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;margin:0 0 16px;border-radius:10px;overflow:hidden;background:#30333b}
+.stats div{padding:12px 16px;background:#1e2127} .stats b{display:block;color:#fff;font-size:22px;line-height:1.25} .stats span{color:#9b9da6;font-size:12px}
+.hero ul{list-style:none;padding:0;color:#c9c8c3;font-size:13px} .hero code{background:#2a2d34;color:#ffd5ca}
+.hero img.sb{margin:16px 0 0;width:100%;border-radius:10px}
+.part{display:flex;align-items:baseline;gap:14px;margin:42px 0 6px;padding-bottom:10px;border-bottom:2px solid var(--fg)}
+.part span{color:var(--accent);font-size:13px;font-weight:800;white-space:nowrap} .part h1{margin:0;font-size:25px;line-height:1.3;letter-spacing:-.01em}
+h2{position:relative;margin:0 0 14px;padding-left:13px;font-size:20px;line-height:1.35} h2:before{content:"";position:absolute;left:0;top:.2em;bottom:.2em;width:4px;border-radius:2px;background:var(--accent)}
+h3{margin:22px 0 7px;font-size:16px} h4{margin:14px 0 3px;color:var(--muted);font-size:13px}
+.card{margin:16px 0;padding:24px 26px;border:1px solid var(--line);border-radius:14px;background:var(--card)}
+.mix{display:flex;height:30px;margin:14px 0;border-radius:7px;overflow:hidden;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.bar{padding:0 10px;color:#fff;font-size:12px;font-weight:600;line-height:30px;white-space:nowrap;overflow:hidden}
+img{max-width:100%;border-radius:8px} img.sb{display:block;margin:10px 0}
+.tw{margin:10px 0;overflow-x:auto;border:1px solid var(--line);border-radius:10px}
+table{width:100%;border-collapse:collapse;font-size:13px;line-height:1.6}
+th,td{padding:8px 11px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;min-width:3.2em}
+th{background:var(--soft);color:var(--muted);font-size:12px;font-weight:700;white-space:nowrap} tbody tr:last-child td{border-bottom:0} tbody tr:hover{background:var(--soft)}
 td img{max-height:96px} td audio{width:150px;height:30px}
-ul,ol{margin:4px 0;padding-left:20px} li{margin:2px 0} p{margin:6px 0}
-pre.prompt{background:var(--bg);padding:10px;border-radius:6px;font-size:13px;white-space:pre-wrap;word-break:break-word}
-code{background:var(--bg);padding:1px 4px;border-radius:4px;font-size:13px}
-details{margin:8px 0;border:1px solid var(--line);border-radius:8px;padding:6px 12px} summary{cursor:pointer;color:var(--accent);font-weight:600}
-.stems div{margin:4px 0} audio{vertical-align:middle;max-width:100%}
-@media print{:root{--bg:#fff;--fg:#1c1917;--muted:#57534e;--card:#fff;--line:#d6d3d1}
-body{padding:0;font-size:12px} .card{border:none;padding:0;margin:10px 0}
-img.sb{max-height:160mm;width:auto;margin:8px auto} h2,h3{break-after:avoid} tr,img{break-inside:avoid}
-table{display:table;font-size:11px} details{border:none;padding:0} summary{color:var(--fg)} audio,.stems{display:none}
-.mix{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
-"""
+ul,ol{margin:6px 0;padding-left:21px} li{margin:4px 0} li::marker{color:var(--accent)} p{margin:8px 0}
+pre.prompt{margin:10px 0;padding:13px 15px;border-left:3px solid var(--accent);border-radius:8px;background:var(--soft);font:13px/1.65 ui-monospace,SFMono-Regular,Menlo,"PingFang SC",monospace;white-space:pre-wrap;word-break:break-word}
+code{padding:1px 5px;border-radius:4px;background:var(--soft);font-size:.88em}
+details{margin:10px 0;padding:9px 14px;border:1px solid var(--line);border-radius:10px;background:var(--card)} details[open]{background:transparent}
+summary{cursor:pointer;color:var(--accent);font-weight:600}
+.stems div{margin:6px 0} audio{vertical-align:middle;max-width:100%}
+.credit{display:flex;flex-wrap:wrap;justify-content:space-between;gap:6px;margin:28px 0 8px;padding:16px 2px;border-top:1px solid var(--line);color:var(--muted);font-size:12px} .credit b{color:var(--fg);letter-spacing:.12em}
+@media screen and (max-width:920px){.layout{display:block;padding:12px}.toc{display:none}.brand{padding:0 16px}.brand span{display:none}.hero{padding:24px 20px}.say:first-child p{font-size:22px}.stats{grid-template-columns:repeat(2,1fr)}.card{padding:18px 16px}.part h1{font-size:21px}}
+@page{size:A4;margin:15mm 13mm 17mm;@bottom-left{content:"REA-VIDEO  ·  PATH";color:#85878f;font-size:8pt}@bottom-right{content:counter(page) " / " counter(pages);color:#85878f;font-size:8pt}}
+@media print{:root{--bg:#fff;--fg:#191b20;--muted:#5d5f67;--card:#fff;--line:#dcd8ce;--soft:#f4f1ea;--accent:#d63d25;--ink:#14161b;--wm:WM_LIGHT;--wm-hero:WM_HERO}
+*{-webkit-print-color-adjust:exact;print-color-adjust:exact} html{scroll-behavior:auto} body{font-size:11.5px;line-height:1.62}
+.brand,.toc,audio,.stems{display:none}.layout{display:block;max-width:none;padding:0}
+.hero{break-inside:avoid;padding:24px 26px}.say:first-child p{font-size:21px}.card{margin:9px 0;padding:0;border:0;border-radius:0}
+.part{break-after:avoid;margin-top:20px} .part h1{font-size:20px} h2{font-size:15px}h3{font-size:13px} h2,h3,h4{break-after:avoid}
+img.sb{max-height:160mm;width:auto;margin:8px auto} tr,img,pre{break-inside:avoid}.tw{overflow:visible} table{font-size:10px} th,td{padding:5px 7px}
+details{padding:0;border:0} summary{color:var(--fg)} a{color:inherit}}
+""".replace("WM_LIGHT", _WATERMARK.format(c="%2314161b12")).replace("WM_DARK", _WATERMARK.format(c="%23ffffff10")).replace("WM_HERO", _WATERMARK.format(c="%23ffffff14")).replace("PATH", PROJECT_PATH)
 
 
 def html_report(b: dict) -> str:
-    body = _md_to_html(markdown(b).split("\n"), b)
+    body = _md_to_html(markdown(b, credit=False).split("\n"), b)
+    tagline = T("视频逆向拆解报告", "Video breakdown report")
     return (f"<!doctype html><html lang=\"{lang()}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-            f"<title>{T('拆解：', 'Breakdown: ')}{html.escape(b['source']['filename'])}</title><style>{_CSS}</style></head><body><main>\n{body}\n</main></body></html>")
+            f"<meta name=\"generator\" content=\"REA-VIDEO\"><title>{T('拆解：', 'Breakdown: ')}{html.escape(b['source']['filename'])} · REA-VIDEO</title><style>{_CSS}</style></head><body>"
+            f"<div class='wm' aria-hidden='true'></div><div class='brand'><a class='logo' href='{PROJECT_URL}'><i></i>REA-VIDEO</a><span>{tagline}</span>"
+            f"<a class='path' href='{PROJECT_URL}'>{PROJECT_PATH}</a></div><div class='layout'>{_toc(body)}<main>\n{body}\n"
+            f"<footer class='credit'><span><b>REA-VIDEO</b> · {tagline}</span><a href='{PROJECT_URL}'>{PROJECT_PATH}</a></footer></main></div></body></html>")
 
 
 def write_reports(b: dict, out: Path) -> None:
