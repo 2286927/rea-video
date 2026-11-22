@@ -224,7 +224,7 @@ def build_remake_jobs(b: dict, bdir: Path, capsule_root: Path) -> Path:
     plan = {**plan, "units": plan.get("units") or []}
     # the intent and the final prompts may have changed since the plan was written: check what will actually be sent
     prompts = load_prompts(bdir)
-    cs = checks(plan, load_intent(bdir), prompts, plan.get("prompting"), sum(u["duration"] for u in plan["units"])) if plan["units"] else []
+    cs = checks(plan, load_intent(bdir), prompts, plan.get("prompting"), sum(u["duration"] for u in plan["units"]), root=bdir) if plan["units"] else []
     errors = [c["msg"] for c in cs if c["level"] == "error"]
     if errors:
         raise ValueError(T("方案检查没过，先改：", "the plan checks failed, fix these first: ") + semi().join(errors))
@@ -304,7 +304,7 @@ def _unit_jobs(b: dict, bdir: Path, run_dir: Path, plan: dict, prompts: dict[str
     frame per shot (keyframes), the shot's first / last frame (frames) or nothing but text; the user's images first; the
     final prompt from remake/prompts.json, else the draft. Everything taken from the source has its subtitles erased."""
     from ..drive import scene_text
-    from ..generation import unit_images
+    from ..generation import redrawn_frame, unit_images
 
     spec = plan.get("spec") or {}
     lo, hi = int(spec.get("min") or 1), int(spec.get("max") or 15)
@@ -333,7 +333,9 @@ def _unit_jobs(b: dict, bdir: Path, run_dir: Path, plan: dict, prompts: dict[str
                 else:
                     params.update(generation_type="image_to_video", image_path=first)
             jid = u["id"] if len(parts) == 1 else f"{u['id']}-{part}"
-            times = [r["t"] for r in u["refs"] if r.get("keyframe")] + ([u["start"] + 0.05, u["end"] - 0.08] if u["strategy"] == "frames" else [])
+            times = [r["t"] for r in u["refs"] if r.get("keyframe") and not redrawn_frame(bdir, f"shot{int(r['keyframe']):03d}")]
+            if u["strategy"] == "frames":
+                times += [t for name, t in ((f"{u['id']}_first", u["start"] + 0.05), (f"{u['id']}_last", u["end"] - 0.08)) if not redrawn_frame(bdir, name)]
             words = list(dict.fromkeys(w for t in times for w in scene_text(b, t)))
             warning = T("参考帧里还有画面内文字（{w}），模型可能照着生成：换成干净图，或确认有授权", "the reference frames still show text in the picture ({w}), which the model may copy: use a clean image or confirm you have the rights",
                         w=join(words[:6])) if words else None
@@ -349,12 +351,13 @@ def ref_clips(b: dict, bdir: Path, unit: dict) -> dict[tuple[int, str], str]:
     reference clips ({(part, "@视频1"): path}), per-shot keyframes ({(1, "@图片3"): path}) and the first / last frame of
     a frames unit ({(1, "first"): path, (1, "last"): path}). Files are named by span, so a re-plan never reuses a stale one."""
     from ..drive import clean_clip, clean_frame
+    from ..generation import redrawn_frame
 
     d = bdir / "remake" / "refs"
     out = {}
     for r in unit.get("refs") or []:
         if r.get("keyframe"):
-            f = d / f"{unit['id']}_shot{int(r['keyframe']):03d}_{r['t']:.2f}.jpg"
+            f = redrawn_frame(bdir, f"shot{int(r['keyframe']):03d}") or d / f"{unit['id']}_shot{int(r['keyframe']):03d}_{r['t']:.2f}.jpg"
             if not f.is_file():
                 clean_frame(b, r["t"], f)
             out[(1, r["tag"])] = str(f.resolve())
@@ -369,7 +372,7 @@ def ref_clips(b: dict, bdir: Path, unit: dict) -> dict[tuple[int, str], str]:
         for key, t in (("first", s0 + 0.05), ("last", s1 - 0.08)):
             if key == "last" and not any(x["kind"] == "last_frame" and x["need"] != "no" for x in unit.get("inputs") or []):
                 continue
-            f = d / f"{unit['id']}_{key}_{t:.2f}.jpg"
+            f = redrawn_frame(bdir, f"{unit['id']}_{key}") or d / f"{unit['id']}_{key}_{t:.2f}.jpg"
             if not f.is_file():
                 clean_frame(b, t, f)
             out[(1, key)] = str(f.resolve())

@@ -42,6 +42,7 @@ GEN_LABELS = ("ai_video", "cg_3d", "anim_2d")
 ALL_GEN_LABELS = GEN_LABELS + ("live_action", "stop_motion", "film_footage", "avatar")
 INSERT_LABELS = ("code_render", "screen_capture", "still_motion", "static_hold")
 INTENT_FILE = Path("remake") / "intent.yaml"
+REDRAWN_DIR = Path("remake") / "redrawn"
 PROMPTS_FILE = Path("remake") / "prompts.json"
 
 STRATEGY_ZH = {"remix": ("参考原片改写", "remix of the source"), "keyframes": ("关键帧参考多镜头", "multi-shot from source keyframes"),
@@ -430,12 +431,27 @@ def shots_written(text: str) -> int:
     return max([int(x) for p in SHOT_RES for x in re.findall(p, text)] or [0])
 
 
+def redrawn_frame(out: Path, name: str) -> Path | None:
+    """A source frame the user redrew with the swapped-in subject: remake/redrawn/<name>.png|jpg|webp."""
+    return next((f for ext in ("png", "jpg", "jpeg", "webp") if (f := Path(out) / REDRAWN_DIR / f"{name}.{ext}").is_file()), None)
+
+
+def source_frame_names(u: dict) -> list[str]:
+    """The frames this unit takes from the source, by the name a redrawn version goes under."""
+    names = [f"shot{int(r['keyframe']):03d}" for r in u.get("refs") or [] if r.get("keyframe")]
+    if u.get("strategy") == "frames":
+        names.append(f"{u['id']}_first")
+        if any(x["kind"] == "last_frame" and x["need"] != "no" for x in u.get("inputs") or []):
+            names.append(f"{u['id']}_last")
+    return names
+
+
 def unit_images(u: dict) -> list[dict]:
     """The images one unit sends, in prompt order."""
     return [r for r in u.get("refs") or [] if r["tag"].startswith("@图片")]
 
 
-def checks(plan: dict, intent: dict, prompts: dict[str, str], notes: dict | None, gen_seconds: float) -> list[dict]:
+def checks(plan: dict, intent: dict, prompts: dict[str, str], notes: dict | None, gen_seconds: float, root: Path | None = None) -> list[dict]:
     """Problems to fix before paying for generation. level "error" blocks `remake-plan`; "warn" is shown."""
     spec, units = plan.get("spec") or {}, plan.get("units") or []
     out: list[dict] = []
@@ -464,6 +480,11 @@ def checks(plan: dict, intent: dict, prompts: dict[str, str], notes: dict | None
         if u["generate_s"] < SHORT_UNIT_S:
             add("warn", T("{u} 只有 {d:.1f} 秒：单独生成不稳，按模型最短时长生成后剪短，或和相邻镜头合到一起",
                           "{u} is only {d:.1f}s: unstable on its own; generate the model's minimum and trim, or join it with a neighbour", u=u["id"], d=u["generate_s"]), u["id"])
+        stale_frames = [x for x in source_frame_names(u) if not (root and redrawn_frame(root, x))] if intent.get("swaps") else []
+        if stale_frames:
+            add("warn", T("{u} 的参考帧还是原片里被替换的主体，模型会在镜头中途变来变去：先照换入的主体重画，存成 remake/redrawn/{f}.png",
+                          "{u}'s reference frames still show the subject being swapped, so the model may morph it mid-shot: redraw them with the new subject as remake/redrawn/{f}.png",
+                          u=u["id"], f="|".join(stale_frames)), u["id"])
         final = prompts.get(u["id"])
         if not final:
             add("warn", T("{u} 还是通用草稿：按 {m} 的写法写好最终提示词，放进 remake/prompts.json", "{u} still has the generic draft: write the final prompt in {m}'s format into remake/prompts.json",
