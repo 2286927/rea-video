@@ -267,16 +267,17 @@ No. rea-video is for learning a video's structure, pacing and techniques, then r
 
 ## Docs
 
-- [docs/what-it-detects.md](docs/what-it-detects.md): everything it detects (10 visual types, camera, lighting, grade, audio)
-- [docs/replicate.md](docs/replicate.md): how to remake from the report
-- [docs/cases.md](docs/cases.md): details on each example
-- [docs/decompose.md](docs/decompose.md): detection rules
-- [docs/cli.md](docs/cli.md): CLI usage and capsule-cinema integration
-- [docs/videomd.md](docs/videomd.md): VIDEO.md, the standard breakdown package that agents and downstream tools read (open format: [videomd/videomd](https://github.com/videomd/videomd))
+- [docs/en/workflow.md](docs/en/workflow.md): the full path in English, from install to remake plan
+- [docs/en/what-it-detects.md](docs/en/what-it-detects.md): everything it detects (10 visual types, camera, lighting, grade, audio)
+- [docs/en/replicate.md](docs/en/replicate.md): how to remake from the report
+- [docs/en/cases.md](docs/en/cases.md): details on each example
+- [docs/en/decompose.md](docs/en/decompose.md): detection rules
+- [docs/en/cli.md](docs/en/cli.md): CLI usage and capsule-cinema integration
+- [docs/en/videomd.md](docs/en/videomd.md): VIDEO.md, the standard breakdown package that agents and downstream tools read (open format: [videomd/videomd](https://github.com/videomd/videomd))
 - [rea_video/capabilities/](rea_video/capabilities/README.md): capability tables for video / image / audio models, used to pick models for the remake plan
 - [eval/RESULTS.md](eval/RESULTS.md): eval results
 
-The docs are in Chinese for now.
+Run `rea-video prefs lang en` for English reports, CLI help and messages. The capability tables, eval results and agent skill are in Chinese.
 
 ## Community
 

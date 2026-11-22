@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from .util import ASR_LANGS, LOG, OCR_LANGS, load_env_files, read_json, setup_logging, read_image, write_json
-from .i18n import LANGS, T, set_lang
+from .i18n import LANGS, T, U, set_lang, set_ui_lang
 from .classify import LABELS
 from .vlm import vlm_note
 
@@ -25,10 +25,10 @@ def _env(args) -> None:
     if env_file:
         if not Path(env_file).expanduser().is_file():
             # silently skipping it made people think the VLM was configured
-            msg = T("找不到配置文件 {p}", "env file not found: {p}", p=env_file)
+            msg = U("找不到配置文件 {p}", "env file not found: {p}", p=env_file)
             if explicit:
                 raise SystemExit(f"rea-video: {msg}")
-            LOG.warning("%s%s", msg, T("（来自 prefs env_file）", " (from prefs env_file)"))
+            LOG.warning("%s%s", msg, U("（来自 prefs env_file）", " (from prefs env_file)"))
         files.insert(0, Path(env_file))
     loaded = load_env_files(files)
     if loaded:
@@ -42,7 +42,7 @@ def _ocr_lang(args) -> None:
     lang = getattr(args, "ocr_lang", None) or pref("ocr_lang")
     if lang:
         if lang not in OCR_LANGS:
-            raise SystemExit(f"错误：不支持的 OCR 语言 {lang}（可选：{', '.join(OCR_LANGS)}）")
+            raise SystemExit(U(f"错误：不支持的 OCR 语言 {lang}（可选：{', '.join(OCR_LANGS)}）", f"error: unsupported OCR language {lang} (choose from: {', '.join(OCR_LANGS)})"))
         os.environ["REA_OCR_LANG"] = lang
 
 
@@ -53,7 +53,7 @@ def _asr_lang(args) -> None:
     lang = getattr(args, "asr_lang", None) or pref("asr_lang")
     if lang:
         if lang not in ASR_LANGS:
-            raise SystemExit(f"错误：不支持的语音识别语言 {lang}（可选：{', '.join(ASR_LANGS)}）")
+            raise SystemExit(U(f"错误：不支持的语音识别语言 {lang}（可选：{', '.join(ASR_LANGS)}）", f"error: unsupported speech language {lang} (choose from: {', '.join(ASR_LANGS)})"))
         os.environ["REA_ASR_LANG"] = lang
 
 
@@ -83,7 +83,7 @@ def cmd_decompose(args) -> int:
     stems = not args.no_stems and pref("stems", "on") == "on"
     lang = args.lang or pref("lang", "zh")
     if lang not in LANGS:
-        raise SystemExit(f"错误：不支持的报告语言 {lang}（可选：{', '.join(LANGS)}）")
+        raise SystemExit(U(f"错误：不支持的报告语言 {lang}（可选：{', '.join(LANGS)}）", f"error: unsupported report language {lang} (choose from: {', '.join(LANGS)})"))
     b = decompose(args.video, out, use_vlm=use_vlm, whole_vlm=not args.no_whole, ocr=not args.no_ocr,
                   workers=args.workers, engine=args.engine or pref("engine"), platform_meta=meta, stems=stems,
                   packaging=not args.no_packaging, lang=lang, asr=not args.no_asr, max_shots_vlm=max(1, args.max_vlm_shots),
@@ -110,15 +110,15 @@ def cmd_survey(args) -> int:
 
         cfg = VLMConfig.from_env()
         if cfg is None:
-            raise SystemExit("rea-video: --vlm 需要 VLM 配置（REA_VLM_BASE_URL / REA_VLM_API_KEY / REA_VLM_MODEL）")
+            raise SystemExit(U("rea-video: --vlm 需要 VLM 配置（REA_VLM_BASE_URL / REA_VLM_API_KEY / REA_VLM_MODEL）", "rea-video: --vlm needs VLM settings (REA_VLM_BASE_URL / REA_VLM_API_KEY / REA_VLM_MODEL)"))
         asker = vlm_asker(VLMClient(cfg, out / "vlm_cache"), prompt_lang_note())
     res = run(Path(args.video).expanduser().resolve(), out.expanduser().resolve(), track, detect_shots(track), info,
               asker=asker, workers=args.workers, detail=not args.no_detail)
     if res["status"] == "waiting":
-        res["next"] = T("看 images 里的图，按 tasks 里的问题把答案写进 waiting 里的文件（各文件互不相关，可以并发），再运行同一条命令",
+        res["next"] = U("看 images 里的图，按 tasks 里的问题把答案写进 waiting 里的文件（各文件互不相关，可以并发），再运行同一条命令",
                         "look at the images, answer the questions in tasks into the waiting files (independent: can run in parallel), then run the same command again")
     else:
-        res["next"] = T("运行 rea-video decompose（同一个 -o），镜头按这次的切点切分，关键帧和节奏写进报告",
+        res["next"] = U("运行 rea-video decompose（同一个 -o），镜头按这次的切点切分，关键帧和节奏写进报告",
                         "run rea-video decompose (same -o): shots follow these cuts, key frames and rhythm go into the report")
     print(json.dumps(res, ensure_ascii=False, indent=1))
     return 0
@@ -156,7 +156,7 @@ def cmd_moments(args) -> int:
         elif gemini.configured():  # only a Gemini key: Gemini's own API, which watches the clips with sound
             asker = mo.vlm_asker(gemini.GeminiClient(), prompt_lang_note())
         else:
-            raise SystemExit("rea-video: --vlm 需要 VLM 配置（REA_VLM_BASE_URL / REA_VLM_API_KEY / REA_VLM_MODEL，或 GEMINI_API_KEY）")
+            raise SystemExit(U("rea-video: --vlm 需要 VLM 配置（REA_VLM_BASE_URL / REA_VLM_API_KEY / REA_VLM_MODEL，或 GEMINI_API_KEY）", "rea-video: --vlm needs VLM settings (REA_VLM_BASE_URL / REA_VLM_API_KEY / REA_VLM_MODEL, or GEMINI_API_KEY)"))
     res = mo.run(b, out, asker=asker)
     if res["status"] == "waiting":
         res["next"] = T("看 images 里的图，按 tasks 里的说明把答案写进 waiting 里的文件（filled 改成 true），再运行同一条命令",
@@ -190,10 +190,10 @@ def cmd_review(args) -> int:
     if args.force or not ans_path.is_file():
         ans_path.write_text(dumps_rows(answers), encoding="utf-8")
     high = [s for s in tasks["shots"] if s["priority"] == "high"]
-    print(f"{len(tasks['shots'])} 个镜头待看图复核，其中 {len(high)} 个优先：" + ", ".join(f"{s['id']}({'; '.join(s['why'])})" for s in high))
-    print(f"说明和图片路径：{out / 'review_tasks.json'}")
-    print(f"把答案填进：{ans_path}")
-    print(f"然后运行：rea-video apply-review {out} --by <你的名字>")
+    print(U(f"{len(tasks['shots'])} 个镜头待看图复核，其中 {len(high)} 个优先：", f"{len(tasks['shots'])} shots to review by eye, {len(high)} first: ") + ", ".join(f"{s['id']}({'; '.join(s['why'])})" for s in high))
+    print(U("说明和图片路径：", "Instructions and image paths: ") + str(out / 'review_tasks.json'))
+    print(U("把答案填进：", "Write answers to: ") + str(ans_path))
+    print(U(f"然后运行：rea-video apply-review {out} --by <你的名字>", f"Then run: rea-video apply-review {out} --by <your name>"))
     return 0
 
 
@@ -212,19 +212,19 @@ def cmd_apply_review(args) -> int:
     log = apply_answers(b, answers, by=args.by or pref("reviewer"))
     b = finalize(b, out)
     for p in log["problems"]:
-        print(f"跳过 {p}")
+        print(U(f"跳过 {p}", f"skipped {p}"))
     if log.get("unanswered"):
-        print(f"没作答、已跳过 {len(log['unanswered'])} 个镜头")
+        print(U(f"没作答、已跳过 {len(log['unanswered'])} 个镜头", f"skipped {len(log['unanswered'])} unanswered shots"))
     changed = [(r["id"], log["before"][r["id"]], r["base"]["label"]) for r in b["shots"]
                if r["id"] in log["before"] and log["before"][r["id"]] != r["base"]["label"]]
-    print(f"已并入 {len(log['applied'])}/{len(b['shots'])} 个镜头；改判 {len(changed)} 个" +
-          ("：" + ", ".join(f"{i} {a}→{c}" for i, a, c in changed) if changed else ""))
-    print(f"结论: {b['summary']['verdict']}")
+    print(U(f"已并入 {len(log['applied'])}/{len(b['shots'])} 个镜头；改判 {len(changed)} 个", f"merged {len(log['applied'])}/{len(b['shots'])} shots, {len(changed)} changed") +
+          (U("：", ": ") + ", ".join(f"{i} {a}→{c}" for i, a, c in changed) if changed else ""))
+    print(U("结论: ", "Verdict: ") + b['summary']['verdict'])
     print(f"VLM: {b['summary']['vlm']}")
     if log.get("packaging"):
-        print("已并入包装复核：" + ", ".join(f"{k} {n}" for k, n in log["packaging"].items()))
+        print(U("已并入包装复核：", "Merged packaging review: ") + ", ".join(f"{k} {n}" for k, n in log["packaging"].items()))
     if not log["applied"] and not log.get("packaging") and not log["problems"]:
-        print("答案文件里没有可并入的镜头（先按 review_tasks.md 填 review_answers.json）")
+        print(U("答案文件里没有可并入的镜头（先按 review_tasks.json 填 review_answers.json）", "no shots to merge in the answers file (fill review_answers.json following review_tasks.json first)"))
     return 0 if log["applied"] or log.get("packaging") else 1
 
 
@@ -261,7 +261,7 @@ def cmd_eval(args) -> int:
     print(json.dumps(res["summary"], ensure_ascii=False, indent=2))
     gone = res["summary"].get("missing")
     if gone:
-        print("rea-video: " + T("只评了 {n}/{m} 个样本，其余找不到文件：{ids}", "scored {n} of {m} videos, files missing for: {ids}",
+        print("rea-video: " + U("只评了 {n}/{m} 个样本，其余找不到文件：{ids}", "scored {n} of {m} videos, files missing for: {ids}",
                                   n=res["summary"]["videos"], m=res["summary"]["videos_listed"], ids=", ".join(gone)), file=sys.stderr)
     return 0
 
@@ -326,7 +326,7 @@ def _capsule_root(args, check: bool = True) -> Path:
 
     root = capsule_root(args.capsule_root)
     if check and not root.is_dir():
-        raise SystemExit(T(f"找不到 capsule-cinema 仓库：{root}。用 --capsule-root 指定，或 rea-video prefs capsule_root <路径> 设成默认",
+        raise SystemExit(U(f"找不到 capsule-cinema 仓库：{root}。用 --capsule-root 指定，或 rea-video prefs capsule_root <路径> 设成默认",
                            f"capsule-cinema repo not found: {root}. Pass --capsule-root, or set it once with: rea-video prefs capsule_root <path>"))
     return root
 
@@ -370,7 +370,7 @@ def _capsule_command(args, argv: list[str]) -> int:
     root = capsule_root(getattr(args, "capsule_root", None))
     script = root / "scripts" / "remake_reference.py"
     if not script.is_file():
-        raise SystemExit(T("生成、拼接和验收由 Capsule Cinema 负责，但没找到它：{r}。安装 https://github.com/JuneYaooo/capsule-cinema ，"
+        raise SystemExit(U("生成、拼接和验收由 Capsule Cinema 负责，但没找到它：{r}。安装 https://github.com/JuneYaooo/capsule-cinema ，"
                            "再用 --capsule-root 指定，或运行 rea-video prefs capsule_root <路径>",
                            "Capsule Cinema does the generation, assembly and checks, but it was not found at {r}. Install "
                            "https://github.com/JuneYaooo/capsule-cinema , then pass --capsule-root or run: rea-video prefs capsule_root <path>", r=root))
@@ -409,21 +409,21 @@ def cmd_tiles(args) -> int:
 
     # bad numbers used to die deep inside numpy / PIL with a traceback, or silently print an empty result
     if args.every <= 0:
-        raise SystemExit("rea-video: --every 必须大于 0（两次抽帧的间隔秒数）")
+        raise SystemExit(U("rea-video: --every 必须大于 0（两次抽帧的间隔秒数）", "rea-video: --every must be greater than 0 (seconds between frames)"))
     if Path(args.video).is_dir() and (Path(args.video) / "breakdown.json").is_file():
         args.video = read_json(Path(args.video) / "breakdown.json")["source"]["path"]  # a package: its source video
     if args.start < 0:
-        raise SystemExit("rea-video: --start 不能小于 0")
+        raise SystemExit(U("rea-video: --start 不能小于 0", "rea-video: --start cannot be negative"))
     if args.cols < 1:
-        raise SystemExit("rea-video: --cols 至少为 1")
+        raise SystemExit(U("rea-video: --cols 至少为 1", "rea-video: --cols must be at least 1"))
     if args.max < 1:
-        raise SystemExit("rea-video: --max 至少为 1")
+        raise SystemExit(U("rea-video: --max 至少为 1", "rea-video: --max must be at least 1"))
     if args.cell < 1:
-        raise SystemExit("rea-video: --cell 至少为 1")
+        raise SystemExit(U("rea-video: --cell 至少为 1", "rea-video: --cell must be at least 1"))
     info = video_info(args.video)
     end = args.end if args.end is not None else info.duration
     if args.start >= end:
-        raise SystemExit(f"rea-video: --end 必须大于 --start（视频时长 {info.duration:.2f} 秒）")
+        raise SystemExit(U(f"rea-video: --end 必须大于 --start（视频时长 {info.duration:.2f} 秒）", f"rea-video: --end must be after --start (video is {info.duration:.2f} s)"))
     times = list(np.arange(args.start, end, args.every))[: args.max]
     import tempfile
 
@@ -466,10 +466,10 @@ def cmd_frames(args) -> int:
     from .layers import scene_frames
 
     if args.every <= 0:
-        raise SystemExit("rea-video: --every 必须大于 0")
+        raise SystemExit(U("rea-video: --every 必须大于 0", "rea-video: --every must be greater than 0"))
     out = Path(args.out_dir)
     if not (out / "breakdown.json").is_file():
-        raise SystemExit(f"rea-video: {out} 下没有 breakdown.json，先运行 decompose")
+        raise SystemExit(U(f"rea-video: {out} 下没有 breakdown.json，先运行 decompose", f"rea-video: no breakdown.json in {out}, run decompose first"))
     res = scene_frames(out, every=args.every, n_points=args.points, all_shots=args.all)
     if not res["scenes"]:
         print(T("没有代码渲染镜头（加 --all 对所有镜头取帧）", "no code-rendered shots (add --all to cover every shot)"))
@@ -483,10 +483,10 @@ def cmd_compare(args) -> int:
     from .layers import compare
 
     if args.every <= 0:
-        raise SystemExit("rea-video: --every 必须大于 0")
+        raise SystemExit(U("rea-video: --every 必须大于 0", "rea-video: --every must be greater than 0"))
     for p in (args.ref, args.remake):
         if not Path(p).is_file():
-            raise SystemExit(f"rea-video: 找不到 {p}")
+            raise SystemExit(U(f"rea-video: 找不到 {p}", f"rea-video: not found: {p}"))
     res = compare(args.ref, args.remake, every=args.every, out=Path(args.out) if args.out else None,
                   scenes=Path(args.scenes) if args.scenes else None, worst=args.worst)
     brief = {k: res[k] for k in ("score", "place", "shape", "offset", "advice", "worst") if k in res}
@@ -502,7 +502,7 @@ def cmd_remake(args) -> int:
     """The plan is rea-video's; Capsule Cinema takes it from there (stills, clips in, assembly, status, check)."""
     out = Path(args.out_dir).expanduser().resolve()
     if not (out / "breakdown.json").is_file():
-        raise SystemExit(f"rea-video: {out} 下没有 breakdown.json，先运行 decompose")
+        raise SystemExit(U(f"rea-video: {out} 下没有 breakdown.json，先运行 decompose", f"rea-video: no breakdown.json in {out}, run decompose first"))
     if args.code:
         from .code_remake import code_remake
 
@@ -527,7 +527,7 @@ def cmd_code_remake(args) -> int:
 
     out = Path(args.out_dir)
     if not (out / "breakdown.json").is_file():
-        raise SystemExit(f"rea-video: {out} 下没有 breakdown.json，先运行 decompose")
+        raise SystemExit(U(f"rea-video: {out} 下没有 breakdown.json，先运行 decompose", f"rea-video: no breakdown.json in {out}, run decompose first"))
     try:
         res = code_remake(out, reset=args.reset, render=not args.no_render, score=not args.no_compare)
     except ValueError as e:
@@ -542,7 +542,7 @@ def cmd_drive(args) -> int:
 
     out = Path(args.out_dir)
     if not (out / "breakdown.json").is_file():
-        raise SystemExit(f"rea-video: {out} 下没有 breakdown.json，先运行 decompose")
+        raise SystemExit(U(f"rea-video: {out} 下没有 breakdown.json，先运行 decompose", f"rea-video: no breakdown.json in {out}, run decompose first"))
     try:
         if args.join is not None:
             res = join(out, Path(args.join) if args.join else None)
@@ -684,12 +684,12 @@ def cmd_correct(args) -> int:
     try:
         logged = correct(b, label=args.label, real=real, shots=args.shots, start=args.start, end=args.end, note=args.note or "")
     except ValueError as e:
-        print(f"错误：{e}", file=sys.stderr)
+        print(U(f"错误：{e}", f"error: {e}"), file=sys.stderr)
         return 2
     b = finalize(b, out)
     changed = [f"{c['shot']} {c['before']}→{c['label']}" for c in logged if c.get("label") and c["before"] != c["label"]]
-    print(f"已纠正 {len(logged)} 个镜头" + (("：" + ", ".join(changed)) if changed else "") + "，并记入记忆")
-    print(f"结论: {b['summary']['verdict']}")
+    print(U(f"已纠正 {len(logged)} 个镜头", f"corrected {len(logged)} shots") + ((U("：", ": ") + ", ".join(changed)) if changed else "") + U("，并记入记忆", " and saved to memory"))
+    print(U("结论: ", "Verdict: ") + b['summary']['verdict'])
     return 0
 
 
@@ -717,10 +717,13 @@ def cmd_plan(args) -> int:
     live = {k: m for k, m in pl.models.items() if m.get("status") not in ("shutdown", "deprecated")}
     m = next((x for x in live.values() if _norm(x["id"]) == _norm(intent["model"]) or _norm(x.get("name", "")) == _norm(intent["model"])), None)
     if not m:
-        print(f"rea-video: 能力地图里没有 {intent['model']}。先查这个模型的官方文档（单次时长、能不能吃参考视频 / 参考图和各几个、"
-              f"能不能一次出多镜头、首尾帧、原生音频、提示词写法），按 {CAP / 'models' / 'video.yaml'} 的格式写进 "
-              f"{user_capabilities() / 'models' / (re.sub(r'[^a-z0-9.-]+', '-', intent['model'].lower()) + '.yaml')}，再跑一次。"
-              "已有的模型：rea-video models", file=sys.stderr)
+        target = user_capabilities() / 'models' / (re.sub(r'[^a-z0-9.-]+', '-', intent['model'].lower()) + '.yaml')
+        print(U(f"rea-video: 能力地图里没有 {intent['model']}。先查这个模型的官方文档（单次时长、能不能吃参考视频 / 参考图和各几个、"
+                f"能不能一次出多镜头、首尾帧、原生音频、提示词写法），按 {CAP / 'models' / 'video.yaml'} 的格式写进 {target}，再跑一次。"
+                "已有的模型：rea-video models",
+                f"rea-video: {intent['model']} is not in the capability map. Check its official docs (clip length, reference videos / images and how many, "
+                f"multi-shot, first and last frame, native audio, prompt style), add it to {target} in the format of {CAP / 'models' / 'video.yaml'}, "
+                "and run again. Known models: rea-video models"), file=sys.stderr)
         return 2
     intent["model"] = m["id"]
     save_intent(out, intent)
@@ -734,7 +737,7 @@ def cmd_plan(args) -> int:
             m=m["id"], p=b["summary"].get("production", "")))
     if n:
         print(T("原片参考 {n} 个（已擦掉字幕）：{d}", "{n} source references (subtitles erased): {d}", n=n, d=out / "remake" / "refs"))
-    print(T("模型资料：{src}，核实于 {d}", "Model facts: {src}, checked {d}", src="本地补充" if m.get("local") else "能力地图", d=v.get("date") or "?"))
+    print(T("模型资料：{src}，核实于 {d}", "Model facts: {src}, checked {d}", src=T("本地补充", "local addition") if m.get("local") else T("能力地图", "capability map"), d=v.get("date") or "?"))
     from .generation import check_lines
 
     cs = plan.get("checks") or []
@@ -752,47 +755,49 @@ def cmd_models(args) -> int:
     pl = Planner()
     live = {k: m for k, m in pl.models.items() if m.get("status") not in ("shutdown", "deprecated")}
     if not args.model:
-        for cat, title in (("video", "视频"), ("image", "图像（出首帧 / 关键帧）"), ("character", "人物驱动")):
+        for cat, title in (("video", U("视频", "Video")), ("image", U("图像（出首帧 / 关键帧）", "Image (first / key frames)")), ("character", U("人物驱动", "Character driving"))):
             print(f"{title}:")
             for mid, m in live.items():
                 if m["category"] == cat:
                     lim = (m.get("limits") or {}).get("duration_s") or {}
-                    extra = [f"≤{lim['max']:g}s" if lim.get("max") else "", "一次多镜头" if "video.multi_shot" in m["primitives"] else "",
-                             "有提示词写法" if mid in pl.prompting else ""]
+                    extra = [f"≤{lim['max']:g}s" if lim.get("max") else "", U("一次多镜头", "multi-shot") if "video.multi_shot" in m["primitives"] else "",
+                             U("有提示词写法", "prompt guide") if mid in pl.prompting else ""]
                     print(f"  {mid:22s} {m['name']}" + ("  · " + " · ".join(x for x in extra if x) if any(extra) else ""))
-        print("\n看某个模型的提示词写法：rea-video models <id>；关键帧通用做法：rea-video models keyframes")
+        print(U("\n看某个模型的提示词写法：rea-video models <id>；关键帧通用做法：rea-video models keyframes", "\nPrompt guide for a model: rea-video models <id>; general key-frame guide: rea-video models keyframes"))
         return 0
     if args.model == "keyframes":
-        print("关键帧通用做法：\n" + "\n".join(f"- {x}" for x in pl.keyframe_notes))
+        print(U("关键帧通用做法：\n", "General key-frame guide:\n") + "\n".join(f"- {x}" for x in pl.keyframe_notes))
         return 0
     m = next((x for x in live.values() if _norm(x["id"]) == _norm(args.model)), None)
     if not m:
-        print(f"rea-video: 能力地图里没有 {args.model}；rea-video models 列出全部", file=sys.stderr)
+        print(U(f"rea-video: 能力地图里没有 {args.model}；rea-video models 列出全部", f"rea-video: {args.model} is not in the capability map; rea-video models lists all"), file=sys.stderr)
         return 2
     lim = m.get("limits") or {}
     d = lim.get("duration_s") or {}
-    facts = [f"单次 {d.get('min', 0):g}–{d['max']:g}s" if d.get("max") else "", "可一次多镜头" if "video.multi_shot" in m["primitives"] else "",
-             "首帧" if "video.i2v_first_frame" in m["primitives"] else "", "首尾帧" if "video.i2v_first_last" in m["primitives"] else "",
-             "多参考" if "video.multi_reference" in m["primitives"] else "", "参考视频" if "video.reference_video" in m["primitives"] else "",
-             "原生音频" if (m.get("audio") or {}).get("native") else ""]
+    facts = [U(f"单次 {d.get('min', 0):g}–{d['max']:g}s", f"{d.get('min', 0):g}–{d['max']:g}s per clip") if d.get("max") else "", U("可一次多镜头", "multi-shot") if "video.multi_shot" in m["primitives"] else "",
+             U("首帧", "first frame") if "video.i2v_first_frame" in m["primitives"] else "", U("首尾帧", "first + last frame") if "video.i2v_first_last" in m["primitives"] else "",
+             U("多参考", "multi-reference") if "video.multi_reference" in m["primitives"] else "", U("参考视频", "reference video") if "video.reference_video" in m["primitives"] else "",
+             U("原生音频", "native audio") if (m.get("audio") or {}).get("native") else ""]
     print(f"{m['id']} · {m['name']}" + (" · " + " · ".join(x for x in facts if x) if any(facts) else ""))
     notes = pl.prompting.get(m["id"])
     if not notes:
-        print("这个模型还没有记录提示词写法，按通用规则写。")
+        print(U("这个模型还没有记录提示词写法，按通用规则写。", "No prompt guide recorded for this model yet; follow the general rules."))
         return 0
     print("\n".join(prompting_md(notes, full=True)))
     if m["category"] == "video":
-        print("\n关键帧通用做法：rea-video models keyframes")
+        print(U("\n关键帧通用做法：rea-video models keyframes", "\nGeneral key-frame guide: rea-video models keyframes"))
     return 0
 
 
 def cmd_prefs(args) -> int:
-    from .memory import PREF_KEYS, add_note, load_prefs, remove_note, set_pref
+    from .i18n import ui_lang
+    from .memory import PREF_KEYS, PREF_KEYS_EN, add_note, load_prefs, remove_note, set_pref
 
     if args.key and args.value is None and "=" in args.key:  # also accept `prefs key=value`
         args.key, args.value = args.key.split("=", 1)
     if args.key and args.key not in PREF_KEYS:
-        print(f"错误：未知偏好 {args.key}（可选：{', '.join(PREF_KEYS)}；用法 rea-video prefs <key> <value>）", file=sys.stderr)
+        print(U(f"错误：未知偏好 {args.key}（可选：{', '.join(PREF_KEYS)}；用法 rea-video prefs <key> <value>）",
+                f"error: unknown preference {args.key} (choose from: {', '.join(PREF_KEYS)}; usage: rea-video prefs <key> <value>)"), file=sys.stderr)
         return 2
     try:
         if args.note:
@@ -807,13 +812,14 @@ def cmd_prefs(args) -> int:
             print(load_prefs().get(args.key, ""))
             return 0
     except ValueError as e:
-        print(f"错误：{e}", file=sys.stderr)
+        print(U(f"错误：{e}", f"error: {e}"), file=sys.stderr)
         return 2
     prefs = load_prefs()
-    for k, desc in PREF_KEYS.items():
-        print(f"{k:<9} = {prefs.get(k, '（未设置）')}    # {desc}")
+    set_ui_lang(prefs.get("lang") if args.key == "lang" else ui_lang())  # `prefs lang en` answers in English right away
+    for k, desc in (PREF_KEYS_EN if ui_lang() == "en" else PREF_KEYS).items():
+        print(f"{k:<9} = {prefs.get(k, U('（未设置）', '(not set)'))}    # {desc}")
     for i, n in enumerate(prefs.get("notes", []), 1):
-        print(f"说明 {i}: {n}")
+        print(U(f"说明 {i}: {n}", f"Note {i}: {n}"))
     return 0
 
 
@@ -822,13 +828,27 @@ def cmd_memory(args) -> int:
 
     if args.export_labels:
         n = export_labels(Path(args.export_labels))
-        print(f"已导出 {n} 条视频的纠正到 {args.export_labels}（先把 path 填好，再用 rea-video eval 评测）")
+        print(U(f"已导出 {n} 条视频的纠正到 {args.export_labels}（先把 path 填好，再用 rea-video eval 评测）", f"exported corrections for {n} videos to {args.export_labels} (fill in path, then score with rea-video eval)"))
         return 0
     print("\n".join(summary_lines()))
     return 0
 
 
+def _cli_lang(argv: list[str] | None) -> str | None:
+    """CLI language: an explicit --lang, then $REA_VIDEO_LANG, then prefs lang."""
+    from .memory import pref
+
+    argv = sys.argv[1:] if argv is None else argv
+    for i, a in enumerate(argv):
+        if a == "--lang" and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith("--lang="):
+            return a.split("=", 1)[1]
+    return os.environ.get("REA_VIDEO_LANG") or pref("lang")
+
+
 def main(argv: list[str] | None = None) -> int:
+    set_ui_lang(_cli_lang(argv))
     ap = argparse.ArgumentParser(prog="rea-video", description="逆向拆解视频：逐镜头判断实拍 / AI 生成 / 代码渲染 / 混合，并生成复刻方案")
     ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument("--env-file", help="额外的 .env（例如 capsule-cinema/.env，用于 VLM 配置）")
@@ -1048,6 +1068,9 @@ def main(argv: list[str] | None = None) -> int:
     for sp in sub.choices.values():  # also accept `rea-video decompose x.mp4 --env-file ...`
         sp.add_argument("--env-file", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
 
+    from .cli_en import localize
+
+    localize(ap, ", ".join(LABELS))
     args = ap.parse_args(argv)
     setup_logging(args.verbose)
     _env(args)
@@ -1058,7 +1081,7 @@ def main(argv: list[str] | None = None) -> int:
     except MediaError as exc:  # missing ffmpeg / unreadable video: one line, not a traceback
         hint = ""
         if "not found on PATH" in str(exc):
-            hint = T("\n安装 ffmpeg：macOS `brew install ffmpeg`，Ubuntu/Debian `sudo apt install ffmpeg`，Windows `winget install Gyan.FFmpeg`",
+            hint = U("\n安装 ffmpeg：macOS `brew install ffmpeg`，Ubuntu/Debian `sudo apt install ffmpeg`，Windows `winget install Gyan.FFmpeg`",
                      "\ninstall ffmpeg: macOS `brew install ffmpeg`, Ubuntu/Debian `sudo apt install ffmpeg`, Windows `winget install Gyan.FFmpeg`")
         print(f"rea-video: {exc}{hint}", file=sys.stderr)
         if args.verbose:
@@ -1067,7 +1090,7 @@ def main(argv: list[str] | None = None) -> int:
     except FileNotFoundError as exc:  # wrong path to a video / breakdown.json / answers file
         if args.verbose:
             raise
-        print("rea-video: " + T(f"找不到文件：{exc.filename}", f"file not found: {exc.filename}"), file=sys.stderr)
+        print("rea-video: " + U(f"找不到文件：{exc.filename}", f"file not found: {exc.filename}"), file=sys.stderr)
         return 2
 
 

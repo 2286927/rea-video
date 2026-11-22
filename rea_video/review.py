@@ -9,6 +9,7 @@ import shlex
 import time
 from pathlib import Path
 
+from .i18n import T
 from .classify import LABEL_ZH, LABELS, top
 from . import aspects, narrative, performance
 from .narrative import ROLE_GUIDE
@@ -109,16 +110,16 @@ def _priority(rec: dict, ctx: dict) -> tuple[str, list[str]]:
     label, conf = probs[0] if probs else ("", 1.0)
     why = []
     if conf < 0.65:
-        why.append(f"置信度低（{conf:.0%}）")
+        why.append(T(f"置信度低（{conf:.0%}）", f"low confidence ({conf:.0%})"))
     if len(probs) > 1 and probs[0][1] - probs[1][1] < 0.25:
-        why.append(f"次选 {LABEL_ZH.get(probs[1][0], probs[1][0])} 接近（{probs[1][1]:.0%}）")
+        why.append(T(f"次选 {LABEL_ZH.get(probs[1][0], probs[1][0])} 接近（{probs[1][1]:.0%}）", f"runner-up {LABEL_ZH.get(probs[1][0], probs[1][0])} is close ({probs[1][1]:.0%})"))
     if (rec.get("base") or {}).get("disputed"):
         why.append(rec["base"]["disputed"])
     facts = (rec.get("deterministic") or {}).get("facts", {})
     if label == "ai_video" and facts.get("pulldown") in ("24→30", "24→60", "25→30?"):
-        why.append("只有 24fps 源的帧率证据：AI 和 24p 相机实拍都会这样，看画面定")
+        why.append(T("只有 24fps 源的帧率证据：AI 和 24p 相机实拍都会这样，看画面定", "the only frame-rate evidence is a 24 fps source, which fits both AI and a 24p camera: decide from the picture"))
     if facts.get("transcode_degraded") and label in ("ai_video", "live_action"):
-        why.append("平台转码，实拍/AI 待确认")
+        why.append(T("平台转码，实拍/AI 待确认", "platform transcode: live action vs AI to confirm"))
     return ("high" if why else "normal"), why
 
 
@@ -149,7 +150,7 @@ def build_tasks(breakdown: dict, out_dir: str) -> tuple[dict, dict]:
         from .dance import maybe_motion, move_of
 
         if maybe_motion(rec, breakdown) and not move_of(rec):
-            why = why + ["长镜头、动作量大、有配乐少台词：如果大幅度的全身动作本身是看点（舞蹈、打斗、健身），填 performance.move / movers / full_body / backdrop"]
+            why = why + [T("长镜头、动作量大、有配乐少台词：如果大幅度的全身动作本身是看点（舞蹈、打斗、健身），填 performance.move / movers / full_body / backdrop", "long shot with big motion, music and few lines: if large full-body movement is the point (dance, fight, fitness), fill in performance.move / movers / full_body / backdrop")]
         shoot_like = any(l in SHOOT_LIKE for l, _ in ranked[:2])
         shots.append({
             "id": rec["id"], "index": rec["index"], "start": rec["start"], "end": rec["end"], "duration": rec["duration"],
