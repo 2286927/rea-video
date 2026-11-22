@@ -282,6 +282,25 @@ def cmd_videomd(args) -> int:
     return 0
 
 
+def cmd_clean_paths(args) -> int:
+    from .clean_paths import clean_paths
+
+    rows = clean_paths(Path(args.dir), apply=args.apply)
+    changed = [r for r in rows if r["cleaned"]]
+    kept = [r for r in rows if r["kept"]]
+    for r in changed:
+        print(f"{'cleaned' if args.apply else 'would clean'} {r['package']}: {', '.join(r['cleaned'])}")
+    for r in kept:
+        print(f"still has local paths {r['package']}: {', '.join(r['kept'])}")
+    for r in rows:
+        if r["error"]:
+            print(f"failed {r['package']}: {r['error']}", file=sys.stderr)
+    print(T("{n} 个包，{c} 个{v}，{k} 个仍含运行时要用的本机路径（分享前别带上这些文件）",
+            "{n} packages, {c} {v}, {k} still hold local paths a later step needs (leave those files out when sharing)",
+            n=len(rows), c=len(changed), v=T("已清理", "cleaned") if args.apply else T("待清理（加 --apply 执行）", "to clean (add --apply)"), k=len(kept)))
+    return 1 if any(r["error"] for r in rows) else 0
+
+
 def cmd_pdf(args) -> int:
     from .pdf import write_pdf
 
@@ -341,14 +360,26 @@ def _run_integration(script: str, python: str, argv: list[str]) -> int:
     return subprocess.call([python, str(path), *argv])
 
 
+def _capsule_command(args, argv: list[str]) -> int:
+    """Generation, assembly and checks belong to Capsule Cinema: run its command in its own environment."""
+    import subprocess
+
+    from .memory import capsule_root
+
+    # capsule-root 只认命令行和用户配置（jobs.json 可能是别人给的，不能让它决定跑哪个解释器、import 哪里的代码）
+    root = capsule_root(getattr(args, "capsule_root", None))
+    script = root / "scripts" / "remake_reference.py"
+    if not script.is_file():
+        raise SystemExit(T("生成、拼接和验收由 Capsule Cinema 负责，但没找到它：{r}。安装 https://github.com/JuneYaooo/capsule-cinema ，"
+                           "再用 --capsule-root 指定，或运行 rea-video prefs capsule_root <路径>",
+                           "Capsule Cinema does the generation, assembly and checks, but it was not found at {r}. Install "
+                           "https://github.com/JuneYaooo/capsule-cinema , then pass --capsule-root or run: rea-video prefs capsule_root <path>", r=root))
+    return subprocess.call([_capsule_python(getattr(args, "python", None), root), str(script), *argv], cwd=root)
+
+
 def cmd_remake_run(args) -> int:
     jobs = Path(args.jobs).expanduser().resolve()
-    # capsule-root 只认命令行（jobs.json 可能是别人给的，不能让它决定跑哪个解释器、import 哪里的代码）
-    root = _capsule_root(args, check=not args.dry_run)
-    argv = ["--jobs", str(jobs), "--capsule-root", str(root)] + (["--only", args.only] if args.only else []) + (["--dry-run"] if args.dry_run else [])
-    # 试跑不调用 capsule-cinema，用当前解释器即可
-    python = sys.executable if args.dry_run and not args.python else _capsule_python(args.python, root)
-    return _run_integration("run_remake.py", python, argv)
+    return _capsule_command(args, ["run", str(jobs)] + (["--only", args.only] if args.only else []) + (["--dry-run"] if args.dry_run else []))
 
 
 def cmd_capsule_draft(args) -> int:
@@ -362,10 +393,10 @@ def cmd_capsule_draft(args) -> int:
 
 
 def cmd_assemble(args) -> int:
-    from .remake import assemble
-
-    print(assemble(Path(args.breakdown), Path(args.results), Path(args.out) if args.out else None, overlays=args.overlays))
-    return 0
+    pkg = Path(args.breakdown).expanduser().resolve().parent
+    argv = ["assemble", str(pkg), "--results", str(Path(args.results).expanduser().resolve())]
+    argv += ["-o", str(Path(args.out).expanduser().resolve())] if args.out else []
+    return _capsule_command(args, argv + ([] if args.overlays else ["--no-overlays"]))
 
 
 def cmd_tiles(args) -> int:
@@ -379,6 +410,8 @@ def cmd_tiles(args) -> int:
     # bad numbers used to die deep inside numpy / PIL with a traceback, or silently print an empty result
     if args.every <= 0:
         raise SystemExit("rea-video: --every 必须大于 0（两次抽帧的间隔秒数）")
+    if Path(args.video).is_dir() and (Path(args.video) / "breakdown.json").is_file():
+        args.video = read_json(Path(args.video) / "breakdown.json")["source"]["path"]  # a package: its source video
     if args.start < 0:
         raise SystemExit("rea-video: --start 不能小于 0")
     if args.cols < 1:
@@ -466,13 +499,27 @@ def cmd_compare(args) -> int:
 
 
 def cmd_remake(args) -> int:
-    from .remake import remake
-
-    out = Path(args.out_dir)
+    """The plan is rea-video's; Capsule Cinema takes it from there (stills, clips in, assembly, status, check)."""
+    out = Path(args.out_dir).expanduser().resolve()
     if not (out / "breakdown.json").is_file():
         raise SystemExit(f"rea-video: {out} 下没有 breakdown.json，先运行 decompose")
-    print(json.dumps(remake(out, code=args.code, overlays=not args.no_overlays), ensure_ascii=False, indent=1))
-    return 0
+    if args.code:
+        from .code_remake import code_remake
+
+        b = read_json(out / "breakdown.json")
+        if any(sh["base"]["label"] == "code_render" for sh in b["shots"]) and not (out / "code" / "remake.mp4").is_file():
+            try:
+                code_remake(out)
+            except (ValueError, OSError, RuntimeError) as exc:
+                print(f"rea-video: code-remake: {exc}", file=sys.stderr)
+    args.breakdown = str(out / "breakdown.json")
+    args.capsule_root = getattr(args, "capsule_root", None)
+    root = _capsule_root(args)
+    args.capsule_root = str(root)
+    rc = cmd_remake_plan(args)
+    if rc:
+        return rc
+    return _capsule_command(args, ["assemble", str(out)] + (["--no-overlays"] if args.no_overlays else []))
 
 
 def cmd_code_remake(args) -> int:
@@ -840,7 +887,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--capsule-root", help="capsule-cinema 仓库；默认 $CAPSULE_CINEMA_ROOT、prefs capsule_root，再退到 ~/code/github/capsule-cinema")
     r.set_defaults(func=cmd_remake_plan)
 
-    rr = sub.add_parser("remake-run", help="用 capsule-cinema 执行 remake-plan 生成的任务（会计费，先 --dry-run）")
+    rr = sub.add_parser("remake-run", help="交给 Capsule Cinema 执行 remake-plan 生成的任务（会计费，先 --dry-run）")
     rr.add_argument("jobs", help="remake-plan 输出的 jobs.json")
     rr.add_argument("--capsule-root", help="须与 remake-plan 时一致；默认同 remake-plan")
     rr.add_argument("--dry-run", action="store_true", help="只列出任务和参数，不调用模型")
@@ -858,10 +905,11 @@ def main(argv: list[str] | None = None) -> int:
     cd.add_argument("--python", help="capsule-cinema 的 Python；默认同 remake-run")
     cd.set_defaults(func=cmd_capsule_draft)
 
-    a = sub.add_parser("assemble", help="把复刻结果按原时间线拼回，并输出对比视频")
+    a = sub.add_parser("assemble", help="交给 Capsule Cinema：把复刻结果按原时间线拼回，并输出对比视频")
     a.add_argument("breakdown")
     a.add_argument("results", help="remake-run 输出的 results.json（或自己写的同格式文件）")
     a.add_argument("-o", "--out")
+    a.add_argument("--capsule-root", help="capsule-cinema 仓库；默认 $CAPSULE_CINEMA_ROOT、prefs capsule_root，再退到 ~/code/github/capsule-cinema")
     a.add_argument("--overlays", action="store_true",
                    help="把测得的字幕 / 花字 / 标题按原样式叠回换掉的镜头（保留原片的镜头本来就有）；贴纸只列出来，要自己找素材")
     a.set_defaults(func=cmd_assemble)
@@ -895,10 +943,11 @@ def main(argv: list[str] | None = None) -> int:
     cp.add_argument("-o", "--out", help="输出目录：compare.json 和 compare_worst.jpg")
     cp.set_defaults(func=cmd_compare)
 
-    rm = sub.add_parser("remake", help="一条命令出复刻：静图按运动重建（代码渲染镜头默认原片占位，加 --code 出快速草稿）、已生成 / 你给的镜头剪进去，其余原片占位；输出成片、对比视频和逐镜进度（remake/status.md）")
+    rm = sub.add_parser("remake", help="交给 Capsule Cinema 出复刻：静图按运动重建（代码渲染镜头默认原片占位，加 --code 出快速草稿）、已生成 / 你给的镜头剪进去，其余原片占位；输出成片、对比视频和逐镜进度（remake/status.md）")
     rm.add_argument("out_dir", help="decompose 的输出目录")
     rm.add_argument("--code", action="store_true", help="用 code-remake 给代码渲染镜头出快速草稿（粒子 / 数据可视化类画面接近原片；插画动画建议交给 HyperFrames 等 HTML 视频框架）")
     rm.add_argument("--no-overlays", action="store_true", help="换掉的镜头上不叠回字幕 / 花字")
+    rm.add_argument("--capsule-root", help="capsule-cinema 仓库；默认 $CAPSULE_CINEMA_ROOT、prefs capsule_root，再退到 ~/code/github/capsule-cinema")
     rm.set_defaults(func=cmd_remake)
 
     cr = sub.add_parser("code-remake", help="代码渲染镜头的第一版复刻：按场景的采样点 / 抠图、运动和背景光写出可改的工程（code/spec.json + render.py），对齐原片后渲染并打分")
@@ -926,6 +975,11 @@ def main(argv: list[str] | None = None) -> int:
     rl.add_argument("out_dir")
     rl.add_argument("--check", action="store_true", help="只校验目录是否符合 VIDEO.md 规范（https://github.com/videomd/videomd），不重写")
     rl.set_defaults(func=cmd_videomd)
+
+    cl = sub.add_parser("clean-paths", help="清掉旧拆解包里的本机路径，方便分享；默认只报告，加 --apply 才改")
+    cl.add_argument("dir", help="拆解包目录，或包含多个包的上级目录")
+    cl.add_argument("--apply", action="store_true", help="真正改写文件")
+    cl.set_defaults(func=cmd_clean_paths)
 
     pd = sub.add_parser("pdf", help="把 report.html 打印成 report.pdf（用本机的 Chrome / Chromium / Edge，折叠内容全部展开）")
     pd.add_argument("out_dir")

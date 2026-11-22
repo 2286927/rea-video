@@ -7,6 +7,7 @@ from __future__ import annotations
 import re
 import shlex
 import time
+from pathlib import Path
 
 from .classify import LABEL_ZH, LABELS, top
 from . import aspects, narrative, performance
@@ -193,8 +194,10 @@ def build_tasks(breakdown: dict, out_dir: str) -> tuple[dict, dict]:
     instructions = INSTRUCTIONS.replace("<PROMPT_LANG>", "英文" if breakdown.get("lang") == "en" else "中文")
     if breakdown.get("lang") == "en":
         instructions += "\n\n报告语言是英文：evidence、description、image_prompt、video_prompt 和其他自由文本都用英文写（video_prompt_en 可以和 video_prompt 相同）。"
-    tasks = {"instructions": instructions, "video": video, "storyboard": "storyboard.jpg",
-             "zoom_cmd": _tiles_cmd(video, 0, 0, 0.2, f"{out_dir}/check_ID.jpg")
+    # run from the package directory: `tiles .` finds the video, so this file carries no local path
+    tasks = {"instructions": instructions, "video": Path(str(video)).name, "storyboard": "storyboard.jpg",
+             "zoom_cmd_cwd": "package root",
+             "zoom_cmd": _tiles_cmd(".", 0, 0, 0.2, "check_ID.jpg")
              .replace("--start 0.00 --end 0.00", "--start {start} --end {end}").replace("check_ID.jpg", "check_{id}.jpg"),
              "shot_aspects_template": aspects.review_template(),
              "video_context": {k: ctx.get(k) for k in ("transcoded", "platform", "native30", "film_hint_share") if k in ctx},

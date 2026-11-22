@@ -241,9 +241,53 @@ def build_remake_jobs(b: dict, bdir: Path, capsule_root: Path) -> Path:
             jobs.append({"shot": sh["index"], "id": sh["id"], "shots": [sh["index"]], "executor": "keep_original", "label": lab,
                          "reason": rep.get("note", ""), "user_assets": rep.get("user_assets", [])})
     jobs.sort(key=lambda j: (j["shot"], j.get("part", 0)))
+    write_handoff(b, bdir, jobs)
     out = bdir / "remake" / "jobs.json"
     write_json(out, {"breakdown": str((bdir / "breakdown.json").resolve()), "capsule_root": str(capsule_root),
                      "run_dir": str(run_dir), "engine": plan.get("model"), "strategy": plan.get("strategy"), "jobs": jobs})
+    return out
+
+
+HANDOFF_SCHEMA = "rea_video.remake_handoff.v1"
+
+
+def write_handoff(b: dict, bdir: Path, jobs: list[dict]) -> Path:
+    """What Capsule Cinema needs to generate, assemble and check the remake, with package-relative paths only. rea-video
+    knows the shots' measured moves, the text to lay back on and what each shot still needs; the doing is Capsule's."""
+    from ..packaging import fit_ass_sizes, to_ass
+    from ..remake import _needs, _next_step, overlay_cues
+
+    src = b["source"]
+    w, h = src["width"], src["height"]
+    if src.get("rotation") in (90, 270):
+        w, h = h, w
+    w, h = w - w % 2, h - h % 2
+    rdir = bdir / "remake"
+    rdir.mkdir(parents=True, exist_ok=True)
+    duration = float(src.get("duration") or (b["shots"][-1]["end"] if b["shots"] else 0))
+    pack = b.get("packaging") or {}  # a cue without text has nothing to lay back on
+    readable = {**b, "packaging": {**pack, "text_cues": [c for c in pack.get("text_cues", []) if c.get("text")]}}
+    cues, stickers = overlay_cues(readable, [(0.0, duration)])
+    ass = None
+    if cues:
+        f = rdir / "overlays_all.ass"
+        f.write_text(to_ass(cues, w, h), encoding="utf-8")
+        try:
+            fit_ass_sizes(f)
+        except (OSError, RuntimeError, ValueError):
+            pass  # the measured sizes stay; only the font-metric correction is lost
+        ass = "remake/overlays_all.ass"
+    plan = b.get("production_plan") or {}
+    executor = {j["shot"]: j["executor"] for j in jobs}
+    shots = [{"index": sh["index"], "start": sh["start"], "end": sh["end"], "label": sh["base"]["label"],
+              "first_frame": (sh.get("assets") or {}).get("first_frame"), "local": (sh.get("replication") or {}).get("local") or {},
+              "executor": executor.get(sh["index"], "keep_original"), "next": _next_step(sh, plan), "needs": _needs(sh)}
+             for sh in b["shots"]]
+    code = bdir / "code" / "remake.mp4"
+    out = rdir / "handoff.json"
+    write_json(out, {"schema": HANDOFF_SCHEMA, "width": w, "height": h, "fps": src["fps"], "duration": duration,
+                     "has_audio": bool(src.get("has_audio")), "shots": shots,
+                     "overlays": {"ass": ass, "stickers": stickers}, "code_video": "code/remake.mp4" if code.is_file() else None})
     return out
 
 
