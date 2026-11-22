@@ -29,6 +29,7 @@ rea-video 负责拆解和复刻方案，capsule-cinema 负责生成、拼接和�
 ```bash
 CC=$CAPSULE_CINEMA_ROOT   # capsule-cinema 仓库路径
 cd $CC
+python3.12 scripts/remake_reference.py recipes /abs/out/ref                 # 先看有没有合适的配方；有就按配方做，没有再走下面的通用流程
 python3.12 scripts/remake_reference.py prepare /abs/out/ref                 # 出任务和交接文件，不计费
 python3.12 scripts/remake_reference.py run /abs/out/ref/remake/jobs.json --dry-run   # 先给用户看任务；--only G2 只跑一个单元
 python3.12 scripts/remake_reference.py run /abs/out/ref/remake/jobs.json    # 用户确认后再跑（计费）
