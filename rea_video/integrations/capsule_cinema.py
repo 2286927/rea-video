@@ -55,9 +55,14 @@ def _shot_copy(s: dict) -> str:
     return " / ".join(out[:6])
 
 
-def export_capsule_analysis(b: dict, out_path: Path) -> Path:
+def export_capsule_analysis(b: dict, out_path: Path, keep_source_text: bool = False) -> Path:
+    """Analyzer JSON for a capsule draft. A capsule is a reusable recipe, so by default it carries the source's form only:
+    no spoken or on-screen words, scene descriptions, or file path, any of which can name a brand, a person or a licence."""
     s = b["summary"]
-    whole = b.get("whole_video_vlm") or {}
+    whole = dict(b.get("whole_video_vlm") or {})
+    if not keep_source_text:
+        for k in ("segments", "hook", "summary"):
+            whole.pop(k, None)
     shots = b["shots"]
     mix_txt = "、".join(f"{m['label_zh']} {m['ratio']:.0%}" for m in s["production_mix"])
     segments = []
@@ -65,7 +70,7 @@ def export_capsule_analysis(b: dict, out_path: Path) -> Path:
     for sh in shots:
         v = sh.get("vlm") or {}
         f = sh["features"]
-        copy = _shot_copy(sh)
+        copy = _shot_copy(sh) if keep_source_text else ""
         literals += [t for t in copy.split(" / ") if len(t) >= 2]
         motion = CAMERA_ZH.get(f.get("camera", "unknown"), "")
         if sh["base"]["label"] == "still_motion":
@@ -73,7 +78,7 @@ def export_capsule_analysis(b: dict, out_path: Path) -> Path:
         segments.append({
             "start_time": _mmss(sh["start"]), "end_time": _mmss(sh["end"]),
             "beat": f"镜头 {sh['index']}（{sh['duration']:.1f}s）",
-            "visuals": f"[{sh['base']['label_zh']} {sh['base']['confidence']:.0%}] " + (v.get("description") or sh["verdict"]),
+            "visuals": f"[{sh['base']['label_zh']} {sh['base']['confidence']:.0%}] " + ((v.get("description") or sh["verdict"]) if keep_source_text else "按原片的景别和机位重新设计内容"),
             "material": (sh.get("material") or {}).get("origin_zh", ""),
             "motion": motion, "copy": copy,
             "audio": "",
@@ -202,7 +207,7 @@ def export_capsule_analysis(b: dict, out_path: Path) -> Path:
         "content_scope": content_scope,
         "warnings": [] if b["analysis"]["vlm"].get("used") else ["未启用 VLM：镜头描述与文案较少，建议用 --vlm 重新拆解"],
         "rea_video": {"verdict": s["verdict"], "production_mix": s["production_mix"], "confidence": s["confidence"],
-                      "source": b["source"]["path"]},
+                      **({"source": b["source"]["path"]} if keep_source_text else {})},
     }
     write_json(out_path, data)
     return out_path
@@ -291,13 +296,14 @@ def write_handoff(b: dict, bdir: Path, jobs: list[dict]) -> Path:
     return out
 
 
-GEN_TYPE = {"remix": "multimodal", "keyframes": "image_to_video", "frames": "first_last_frame", "text": "text_to_video"}
+GEN_TYPE = {"remix": "multimodal", "keyframes": "multimodal", "frames": "first_last_frame", "text": "text_to_video"}
 
 
 def _unit_jobs(b: dict, bdir: Path, run_dir: Path, plan: dict, prompts: dict[str, str]) -> list[dict]:
     """One job per call of each unit, fed as the plan says: the source stretch as reference video (remix), one source
     frame per shot (keyframes), the shot's first / last frame (frames) or nothing but text; the user's images first; the
     final prompt from remake/prompts.json, else the draft. Everything taken from the source has its subtitles erased."""
+    from ..drive import scene_text
     from ..generation import unit_images
 
     spec = plan.get("spec") or {}
@@ -327,9 +333,14 @@ def _unit_jobs(b: dict, bdir: Path, run_dir: Path, plan: dict, prompts: dict[str
                 else:
                     params.update(generation_type="image_to_video", image_path=first)
             jid = u["id"] if len(parts) == 1 else f"{u['id']}-{part}"
+            times = [r["t"] for r in u["refs"] if r.get("keyframe")] + ([u["start"] + 0.05, u["end"] - 0.08] if u["strategy"] == "frames" else [])
+            words = list(dict.fromkeys(w for t in times for w in scene_text(b, t)))
+            warning = T("参考帧里还有画面内文字（{w}），模型可能照着生成：换成干净图，或确认有授权", "the reference frames still show text in the picture ({w}), which the model may copy: use a clean image or confirm you have the rights",
+                        w=join(words[:6])) if words else None
             jobs.append({"shot": u["shots"][0], "id": jid, "unit": u["id"], "part": part, "parts": len(parts), "shots": u["shots"],
                          "executor": "capsule_cinema", "label": u["label"], "strategy": u["strategy"], "images": images,
-                         "params": params, "trim_to": round(secs, 3), "prompt_source": "final" if u["id"] in prompts else "draft"})
+                         "params": params, "trim_to": round(secs, 3), "prompt_source": "final" if u["id"] in prompts else "draft",
+                         **({"warning": warning} if warning else {})})
     return jobs
 
 

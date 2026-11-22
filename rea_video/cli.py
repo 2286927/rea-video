@@ -389,6 +389,7 @@ def cmd_capsule_draft(args) -> int:
     argv += ["--capsule-display-name", args.capsule_display_name] if args.capsule_display_name else []
     argv += ["--write-capsule"] if args.write_capsule else []
     argv += ["--overwrite-capsule"] if args.overwrite_capsule else []
+    argv += ["--keep-source-text"] if args.keep_source_text else []
     return _run_integration("to_capsule.py", _capsule_python(args.python, root), argv)
 
 
@@ -923,6 +924,7 @@ def main(argv: list[str] | None = None) -> int:
     cd.add_argument("--write-capsule", action="store_true", help="落盘到 capsule-cinema 的 capsules/")
     cd.add_argument("--overwrite-capsule", action="store_true")
     cd.add_argument("--python", help="capsule-cinema 的 Python；默认同 remake-run")
+    cd.add_argument("--keep-source-text", action="store_true", help="保留原片台词、画面文字和镜头描述（只用于你有权使用的视频）")
     cd.set_defaults(func=cmd_capsule_draft)
 
     a = sub.add_parser("assemble", help="交给 Capsule Cinema：把复刻结果按原时间线拼回，并输出对比视频")

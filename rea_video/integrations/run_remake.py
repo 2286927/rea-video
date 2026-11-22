@@ -6,7 +6,9 @@ Writes results.json next to jobs.json; rea-video `assemble` consumes it."""
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
+import os
 import re
 import sys
 import time
@@ -28,6 +30,12 @@ def _video_path(res) -> str | None:
         if v:
             return v
     return None
+
+
+def _routes() -> dict[str, str]:
+    """Local engine routes from the environment, as `plan-engine=run-engine,...`: the plan and reports keep the model name."""
+    pairs = (x.split("=", 1) for x in os.getenv("REA_VIDEO_ENGINE_ROUTES", "").split(",") if "=" in x)
+    return {a.strip(): b.strip() for a, b in pairs}
 
 
 def main() -> None:
@@ -93,23 +101,44 @@ def main() -> None:
     from custom_tools.video_generation import video_generation_tool as vgt  # noqa: E402
 
     tool = vgt.UniversalVideoGenerationTool()
+    routes = {vgt.normalize_video_engine(a): vgt.normalize_video_engine(b) for a, b in _routes().items()}
     failed = []
     for j in todo:
         Path(j["params"]["output_dir"]).mkdir(parents=True, exist_ok=True)
         t0 = time.time()
         label = j["id"] if j.get("unit") else f"shot {j['shot']}"
         print(f"{label}: {j['params']['generation_type']} via {j['params']['engine']} ...", flush=True)
+        if j.get("warning"):
+            print(f"  ! {j['warning']}", flush=True)
+        key = j["id"] if j.get("unit") else str(j["shot"])  # a unit's clip covers several shots: assemble splits it
+        before = results["results"].get(key) or {}
+
+        def keep_task(task_id: str) -> None:  # saved the moment the task exists, so a crash cannot lose a paid result
+            results["results"][key] = {**before, "id": j["id"], "video": None, "task_id": task_id}
+            results_path.write_text(json.dumps(results, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+
         try:
             if j.get("unit"):  # a unit's references go straight to the engine's own tool
                 p = {k: v for k, v in j["params"].items() if k != "engine"}
-                res = vgt._tool_for_engine(vgt.normalize_video_engine(j["params"]["engine"]))._run(**p)
+                eng = vgt.normalize_video_engine(j["params"]["engine"])
+                unit_tool = vgt._tool_for_engine(routes.get(eng, eng))
+                accepts = inspect.signature(unit_tool._run).parameters
+                if "on_task_id" in accepts:
+                    p["on_task_id"] = keep_task
+                    if before.get("task_id"):
+                        p["resume_task_id"] = before["task_id"]
+                        print("  resuming the saved task, no new submission", flush=True)
+                if "output_path" in accepts:
+                    p["output_path"] = str(Path(p["output_dir"]) / f"{j['id']}.mp4")
+                res = unit_tool._run(**p)
             else:
                 res = tool._run(**j["params"])
         except Exception as exc:  # keep going, record the failure
             res = {"error": str(exc)}
         video = _video_path(res)
-        key = j["id"] if j.get("unit") else str(j["shot"])  # a unit's clip covers several shots: assemble splits it
+        task_id = res.get("task_id") if isinstance(res, dict) else None
         results["results"][key] = {"id": j["id"], "video": video, "raw": res if not video else None,
+                                   **({"task_id": task_id} if task_id and not video and res.get("resumable") else {}),
                                    "seconds": round(time.time() - t0, 1), "trim_to": j["trim_to"],
                                    **({k: j[k] for k in ("unit", "part", "parts", "shots")} if j.get("unit") else {})}
         results_path.write_text(json.dumps(results, ensure_ascii=False, indent=2, default=str), encoding="utf-8")

@@ -53,6 +53,7 @@ HELP = {
     "capsule-draft": "draft a capsule-cinema capsule from a breakdown",
     "capsule-draft.capsule_root": _CAPSULE_ROOT,
     "capsule-draft.write_capsule": "write it to capsules/ in capsule-cinema",
+    "capsule-draft.keep_source_text": "keep the source's spoken lines, on-screen text and shot descriptions (only for videos you have the rights to)",
     "capsule-draft.python": "capsule-cinema Python; same default as remake-run",
     "assemble": "through Capsule Cinema: put remade shots back on the original timeline and output a comparison video",
     "assemble.results": "results.json from remake-run (or your own file in the same format)",
