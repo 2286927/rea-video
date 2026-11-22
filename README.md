@@ -67,7 +67,7 @@ You can also hook up a video-capable model (Gemini or Doubao both work) by givin
 
 ## Updates
 
-- **2026-11-21**: Clearer report layout. Remake plans default to MiniMax H3 and follow the model you name.
+- **2026-11-21**: Clearer report layout. Remake plans default to the official MiniMax H3 and follow the model you name.
 - **2026-11-19**: Magic videos: finds the reveal of each trick, frame by frame with a slow-motion clip. Highlights (twists, climaxes, goofs) when you ask for them.
 - **2026-11-17**: Better timing of cuts and moves.
 - **2026-11-15**: Remake plans are made for the model you choose. The report is split into a breakdown part and a remake part.
@@ -142,6 +142,7 @@ All real footage: an overhead phone rig, one rug, one camera position, no voice-
 
 After rea-video breaks a video down, the remake recipe in [capsule-cinema](https://github.com/JuneYaooo/capsule-cinema) generates a new version that keeps the original's camera, motion, pacing and transitions and swaps only the elements you pick.
 These were made with a self-hosted MiniMax H3, using the original shot as the motion reference and keyframes with the swapped elements (gpt-image-2) for the look.
+Remake plans use the official MiniMax H3 specs by default. Name another model, or set the one you usually use, and the plan follows that model instead.
 Below are three remakes OiiOii showed in its WeChat articles. We made two versions of each: one with the same swap as OiiOii, and one that also swaps the subject, setting and props.
 Each GIF plays four versions in sync: the original, OiiOii's remake, our remake and the element-swap version.
 
