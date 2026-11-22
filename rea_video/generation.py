@@ -107,20 +107,26 @@ def spec_of(model: dict | None) -> dict:
     d, refs = lim.get("duration_s") or {}, lim.get("refs") or {}
     rv = (lim.get("ref_video_s") or {}).get("max")
     multi_ref = "video.multi_reference" in prim
+    plan = m.get("planning") or {}
     return {"max": float(d.get("max") or 10), "min": float(d.get("min") or 0),
             "multi_shot": "video.multi_shot" in prim, "shots": int(lim.get("shots_per_generation") or 0) or None,
             "ref_video": "video.reference_video" in prim, "ref_videos": int(refs.get("video") or 1),
             "ref_total": float(rv) if rv else REF_CLIP_S * max(1, int(refs.get("video") or 1)),
             "multi_ref": multi_ref, "images": int(refs.get("image") or (UNKNOWN_IMAGES if multi_ref else 0)),
-            "images_stated": bool(refs.get("image")),
+            "images_stated": bool(refs.get("image")), "prefer": plan.get("strategy"), "plan_images": plan.get("images"),
             "first": "video.i2v_first_frame" in prim, "last": "video.i2v_first_last" in prim,
             "exclusive": bool(lim.get("exclusive_inputs")), "native_audio": bool((m.get("audio") or {}).get("native"))}
 
 
+def planned_images(spec: dict) -> int:
+    """Images a plan uses per call: the model's limit, or the narrower default its capability entry sets."""
+    return min(spec["images"], spec.get("plan_images") or spec["images"])
+
+
 def choose_strategy(spec: dict, n_own: int) -> str:
-    if spec["ref_video"]:
+    if spec["ref_video"] and spec.get("prefer") in (None, "remix"):
         return "remix"
-    if spec["multi_shot"] and spec["multi_ref"] and spec["images"] >= n_own + 2:
+    if spec["multi_shot"] and spec["multi_ref"] and planned_images(spec) >= n_own + 2:
         return "keyframes"
     if spec["first"]:
         return "frames"
@@ -304,7 +310,7 @@ def build_unit(seg: list[dict], k: int, strategy: str, spec: dict, own: list[dic
     elif strategy == "keyframes":
         # image slots left after the user's own: when they run short, the longest shots keep their source frame and the
         # rest get their framing in words (a call kept whole beats a frame for every shot when subjects have no image)
-        room = max(0, spec["images"] - len(refs))
+        room = max(0, planned_images(spec) - len(refs))
         framed = {r["index"] for r in sorted(seg, key=lambda r: -r["duration"])[:room]}
         for r in seg:
             if r["index"] not in framed:
@@ -374,7 +380,7 @@ def plan_generation(b: dict, model: dict | None, intent: dict, new_scene: set[in
         # a swapped-in subject with no image is held only by its description: every extra call is another chance for it
         # to come out different, so keep calls whole and let some shots go without a source frame
         text_only = any(not s.get("image") for s in intent.get("swaps") or [])
-        max_s, max_shots = spec["max"], (spec["shots"] if text_only else min(x for x in (spec["shots"], spec["images"] - len(own)) if x))
+        max_s, max_shots = spec["max"], (spec["shots"] if text_only else min(x for x in (spec["shots"], planned_images(spec) - len(own)) if x))
     elif strategy == "text" and spec["multi_shot"]:
         max_s, max_shots = spec["max"], spec["shots"]
     else:
