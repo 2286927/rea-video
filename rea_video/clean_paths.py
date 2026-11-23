@@ -81,6 +81,8 @@ def clean_package(root: Path, home: str, apply: bool = False) -> dict:
     p = root / BREAKDOWN
     old = p.read_text(encoding="utf-8")
     b = json.loads(old)
+    if not isinstance(b, dict) or not isinstance(b.get("source") or {}, dict):
+        raise ValueError(f"{BREAKDOWN} is not a breakdown")
     src = b.get("source") or {}
     res: dict[str, Any] = {"package": str(root), "cleaned": [], "kept": [], "error": None}
     source_is_local = Path(str(src.get("path") or "")).is_absolute()
@@ -132,5 +134,5 @@ def _guarded(root: Path, home: str, apply: bool) -> dict:
     directory still gets cleaned instead of the whole run dying on it."""
     try:
         return clean_package(root, home, apply)
-    except (OSError, ValueError) as exc:
-        return {"package": str(root), "cleaned": [], "kept": [], "error": f"could not read {BREAKDOWN}: {exc}"}
+    except (OSError, ValueError, TypeError) as exc:
+        return {"package": str(root), "cleaned": [], "kept": [], "error": f"could not clean this package: {exc}"}
