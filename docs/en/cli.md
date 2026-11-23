@@ -37,12 +37,12 @@ Reports are in Chinese by default. Add `--lang en` to `decompose`, or run `rea-v
 rea-video decompose ref.mp4 -o out/ref
 
 # 2. Add a VLM (recommended, not required): a multimodal model looks at the frames, which improves live action / AI / 3D calls
-#    Any OpenAI-compatible multimodal model works; list several models as fallbacks
-export REA_VLM_BASE_URL=https://.../v1 REA_VLM_API_KEY=... REA_VLM_MODEL=gemini-2.5-pro,gpt-4o
+#    Use Gemini directly (set the model with REA_GEMINI_MODEL); it watches clips with sound
+export GEMINI_API_KEY=...
 rea-video decompose ref.mp4 -o out/ref --vlm
-#    Or reuse capsule-cinema's config: rea-video --env-file ~/code/github/capsule-cinema/.env decompose ref.mp4 -o out/ref --vlm
+#    For another multimodal model: export REA_VLM_BASE_URL=https://.../v1 REA_VLM_API_KEY=... REA_VLM_MODEL=gpt-4o
+#    Settings can also live in a file: rea-video --env-file <path> decompose ref.mp4 -o out/ref --vlm
 #    If every VLM call fails the run continues; the report and the "VLM:" line in `rea-video summary` say that all calls failed and the result is the same as no VLM
-#    With only a Gemini key: export GEMINI_API_KEY=... (set the model with REA_GEMINI_MODEL); special moments use Gemini's own API and send clips with sound
 
 open out/ref/report.html
 

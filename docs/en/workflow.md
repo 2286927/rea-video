@@ -60,10 +60,10 @@ rea-video decompose ref.mp4 -o out/ref --lang en
 rea-video summary out/ref/breakdown.json
 ```
 
-This runs offline. A vision model (VLM) is optional but makes live action / AI / 3D calls more reliable. Any OpenAI-compatible multimodal model works:
+This runs offline. A vision model (VLM) is optional but makes live action / AI / 3D calls more reliable. The simplest setup is a Gemini key:
 
 ```bash
-export REA_VLM_BASE_URL=https://.../v1 REA_VLM_API_KEY=... REA_VLM_MODEL=gemini-2.5-pro
+export GEMINI_API_KEY=...
 rea-video decompose ref.mp4 -o out/ref --vlm --lang en
 ```
 

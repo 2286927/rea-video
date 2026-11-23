@@ -1,6 +1,6 @@
 """Google Gemini as the image / video reader, through its own API (not an OpenAI-compatible gateway).
 
-For users whose only key is a Gemini key: GEMINI_API_KEY (or GOOGLE_API_KEY), model REA_GEMINI_MODEL. Gemini watches
+Set GEMINI_API_KEY (or GOOGLE_API_KEY); the model is REA_GEMINI_MODEL. Gemini watches
 video with its sound, so a clip goes in whole: inline when small, else through the Files API (deleted after the
 answer; an upload that can't be deleted expires on Google's side within 48 hours). Short clips are sampled densely
 (video_metadata.fps), long ones at Gemini's default. Used only when the user asks for a VLM (--vlm): the video leaves
@@ -50,6 +50,8 @@ class GeminiError(RuntimeError):
 class GeminiClient:
     """ask_json(prompt, media) like VLMClient; media = [(path, mime)], images and video/mp4 clips."""
     video_ok = True
+
+    media = "both"  # watches the clip with its sound and reads the key frames
 
     def __init__(self, model: str | None = None, key: str | None = None, timeout: float = 600.0):
         self.key = key or api_key()

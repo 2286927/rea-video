@@ -35,12 +35,12 @@ Claude Code 也可以按插件装 skill（CLI 仍需 `pip install`，skill 第�
 rea-video decompose ref.mp4 -o out/ref
 
 # 2. 加 VLM（建议，不强制）：让多模态大模型看画面，实拍/AI/3D 判断更准
-#    任意 OpenAI 兼容的多模态模型都行，模型可写多个做备选
-export REA_VLM_BASE_URL=https://.../v1 REA_VLM_API_KEY=... REA_VLM_MODEL=gemini-2.5-pro,gpt-4o
+#    直接用 Gemini（模型用 REA_GEMINI_MODEL 改），连声音一起看片段
+export GEMINI_API_KEY=...
 rea-video decompose ref.mp4 -o out/ref --vlm
-#    或复用 capsule-cinema 的配置：rea-video --env-file ~/code/github/capsule-cinema/.env decompose ref.mp4 -o out/ref --vlm
+#    用其他多模态模型：export REA_VLM_BASE_URL=https://.../v1 REA_VLM_API_KEY=... REA_VLM_MODEL=gpt-4o
+#    配置也可以放在文件里：rea-video --env-file <path> decompose ref.mp4 -o out/ref --vlm
 #    VLM 调用全部失败时不会中断，报告和 `rea-video summary` 的 "VLM:" 一行会写明"全部调用失败，等同未开"
-#    只有 Gemini 的 key 时：export GEMINI_API_KEY=...（模型用 REA_GEMINI_MODEL 改），特殊时刻走 Gemini 自己的接口，连声音一起看片段
 
 open out/ref/report.html
 

@@ -10,14 +10,11 @@ dist/
 .venv/
 *.pyc
 *.log
-eval/media/
+eval/*
+!eval/RESULTS.md
 .env
 .env.*
 !.env.example
-eval/code_videos.yaml
-eval/code_videos_holdout.yaml
-eval/particles.yaml
-eval/codegen/
 scripts/roundtrip_compare.py
 tests/
 CHANGELOG.md

@@ -26,7 +26,7 @@ from . import aspects
 from .faces import MIN_AREA, shot_faces
 from .visual import LABEL_SHORT, shot_sheet, storyboard
 from .i18n import T, join, semi, set_lang
-from .vlm import SHOT_PROMPT, SILENT_NOTE, SOUND_NOTE, TAKE_NOTE, WHOLE_PROMPT, VLMClient, VLMConfig, normalize_shot_result, normalize_whole, prompt_lang_note, shot_hints, take_results, vlm_note
+from .vlm import make_client, SHOT_PROMPT, SILENT_NOTE, SOUND_NOTE, TAKE_NOTE, WHOLE_PROMPT, normalize_shot_result, normalize_whole, prompt_lang_note, shot_hints, take_results, vlm_note
 
 
 def _sha256_head(path: Path, limit: int = 64 << 20) -> str:
@@ -147,13 +147,7 @@ def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, 
     timeline = load_timeline(out, video, info)
     vlm_client = None  # one client for the survey and the shot pass: a model found down stays skipped
     if (timeline is None or "keyframes" not in timeline) and use_vlm and survey:
-        from . import gemini
-
-        cfg = VLMConfig.from_env()
-        if cfg is not None:
-            vlm_client = VLMClient(cfg, out / "vlm_cache")
-        elif gemini.configured():
-            vlm_client = gemini.GeminiClient()
+        vlm_client = make_client(out / "vlm_cache")
         if vlm_client is not None:
             try:
                 got = run_survey(video, out, track, shots, info, asker=vlm_asker(vlm_client, prompt_lang_note()), workers=workers)
@@ -334,30 +328,20 @@ def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, 
     vlm_info = {"used": False, "requested": use_vlm, "status": "off"}
     whole = None
     if use_vlm:
-        from . import gemini
-
-        cfg = VLMConfig.from_env()
-        if cfg is None and gemini.configured():
-            vlm_client = vlm_client or gemini.GeminiClient()
-            cfg_media, cfg_desc = "both", vlm_client.describe()
-        elif cfg is not None:
-            vlm_client = vlm_client or VLMClient(cfg, out / "vlm_cache")
-            cfg_media, cfg_desc = cfg.media, cfg.describe()
-        else:
-            cfg_media, cfg_desc = None, ""
+        vlm_client = vlm_client or make_client(out / "vlm_cache")
         if vlm_client is None:
-            LOG.warning("--vlm requested but no VLM config found (REA_VLM_* / VIDEO_ANALYSIS_* / GEMINI3_* / GEMINI_API_KEY); continuing without it")
+            LOG.warning("--vlm requested but no VLM config found (GEMINI_API_KEY / REA_VLM_*); continuing without it")
             vlm_info = {"used": False, "requested": True, "status": "not_configured", "error": "no_config"}
         else:
             client = vlm_client
-            vlm_info = {"used": False, "requested": True, "status": "failed", "model": cfg_desc, "media": cfg_media, "errors": []}
+            vlm_info = {"used": False, "requested": True, "status": "failed", "model": client.describe(), "media": client.media, "errors": []}
 
             def run_unit(unit: list[dict]) -> None:
                 """One VLM call per unit: a single shot, or the jump-cut pieces of one take seen as one clip."""
                 first, last = unit[0], unit[-1]
                 span = last["end"] - first["start"]
                 media = []
-                if cfg_media in ("both", "frames"):
+                if client.media in ("both", "frames"):
                     mid = unit[len(unit) // 2]
                     media += [(out / first["assets"]["first_frame"], "image/jpeg"), (out / mid["assets"]["sheet"], "image/jpeg"),
                               (out / last["assets"]["last_frame"], "image/jpeg")]
@@ -367,18 +351,18 @@ def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, 
                 if len(unit) > 1:
                     prompt += TAKE_NOTE.format(n=len(unit), cuts=", ".join(f"{r['start'] - first['start']:.2f}" for r in unit[1:]))
                 spoken = speaks_in(audio, first["start"], first["start"] + min(span, 12.0))
-                if cfg_media in ("both", "video"):
+                if client.media in ("both", "video"):
                     prompt += SOUND_NOTE if spoken else SILENT_NOTE
                 prompt += prompt_lang_note()
                 fallback = None
                 try:
-                    if cfg_media in ("both", "video"):  # a clip that fails to encode costs this unit its video, not the run
+                    if client.media in ("both", "video"):  # a clip that fails to encode costs this unit its video, not the run
                         clip = cut_clip(video, first["start"], min(span, 12.0), out / "clips" / f"{first['id']}.mp4", width=480, audio=spoken)
                         media.insert(0, (clip, "video/mp4"))
                     raw = client.ask_json(prompt, media)
                 except Exception as exc:  # keep going; deterministic result stands
                     raw = None
-                    if spoken and cfg_media in ("both", "video"):  # an endpoint that refuses a clip with sound still gets the picture
+                    if spoken and client.media in ("both", "video"):  # an endpoint that refuses a clip with sound still gets the picture
                         try:
                             clip = cut_clip(video, first["start"], min(span, 12.0), out / "clips" / f"{first['id']}_mute.mp4", width=480)
                             raw = client.ask_json(prompt.replace(SOUND_NOTE, SILENT_NOTE.replace("这一段没检测到人声，", "")),
@@ -386,7 +370,7 @@ def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, 
                             fallback = "mute_clip"
                         except Exception as exc2:  # noqa: BLE001
                             exc = exc2
-                    if raw is None and cfg_media == "both":
+                    if raw is None and client.media == "both":
                         try:
                             raw = client.ask_json(prompt, [m for m in media if m[1] != "video/mp4"])
                             fallback = "frames_only"

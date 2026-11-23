@@ -67,6 +67,16 @@ def _check_vlm_config() -> None:
         raise SystemExit(f"rea-video: {exc}")
 
 
+def _vlm_client(out: Path):
+    from .vlm import make_client
+
+    client = make_client(out / "vlm_cache")
+    if client is None:
+        raise SystemExit(U("rea-video: --vlm 需要 GEMINI_API_KEY，或 REA_VLM_BASE_URL / REA_VLM_API_KEY / REA_VLM_MODEL",
+                           "rea-video: --vlm needs GEMINI_API_KEY, or REA_VLM_BASE_URL / REA_VLM_API_KEY / REA_VLM_MODEL"))
+    return client
+
+
 def cmd_decompose(args) -> int:
     from .pipeline import decompose
 
@@ -112,17 +122,9 @@ def cmd_survey(args) -> int:
     asker = None
     if args.vlm or (pref("vlm") == "on" and not args.no_vlm):
         _check_vlm_config()
-        from . import gemini
-        from .vlm import VLMClient, VLMConfig, prompt_lang_note
+        from .vlm import prompt_lang_note
 
-        cfg = VLMConfig.from_env()
-        if cfg is not None:
-            asker = vlm_asker(VLMClient(cfg, out / "vlm_cache"), prompt_lang_note())
-        elif gemini.configured():
-            asker = vlm_asker(gemini.GeminiClient(), prompt_lang_note())
-        else:
-            raise SystemExit(U("rea-video: --vlm 需要 VLM 配置（REA_VLM_BASE_URL / REA_VLM_API_KEY / REA_VLM_MODEL，或 GEMINI_API_KEY）",
-                               "rea-video: --vlm needs VLM settings (REA_VLM_BASE_URL / REA_VLM_API_KEY / REA_VLM_MODEL, or GEMINI_API_KEY)"))
+        asker = vlm_asker(_vlm_client(out), prompt_lang_note())
     res = run(Path(args.video).expanduser().resolve(), out.expanduser().resolve(), track, detect_shots(track), info,
               asker=asker, workers=args.workers, detail=not args.no_detail)
     if res["status"] == "waiting":
@@ -170,17 +172,9 @@ def cmd_moments(args) -> int:
     asker = None
     if args.vlm or (pref("vlm") == "on" and not args.no_vlm):
         _check_vlm_config()
-        from .vlm import VLMClient, VLMConfig, prompt_lang_note
+        from .vlm import prompt_lang_note
 
-        from . import gemini
-
-        cfg = VLMConfig.from_env()
-        if cfg is not None:
-            asker = mo.vlm_asker(VLMClient(cfg, out / "vlm_cache"), prompt_lang_note())
-        elif gemini.configured():  # only a Gemini key: Gemini's own API, which watches the clips with sound
-            asker = mo.vlm_asker(gemini.GeminiClient(), prompt_lang_note())
-        else:
-            raise SystemExit(U("rea-video: --vlm 需要 VLM 配置（REA_VLM_BASE_URL / REA_VLM_API_KEY / REA_VLM_MODEL，或 GEMINI_API_KEY）", "rea-video: --vlm needs VLM settings (REA_VLM_BASE_URL / REA_VLM_API_KEY / REA_VLM_MODEL, or GEMINI_API_KEY)"))
+        asker = mo.vlm_asker(_vlm_client(out), prompt_lang_note())
     res = mo.run(b, out, asker=asker)
     if res["status"] == "waiting":
         res["next"] = T("看 images 里的图，按 tasks 里的说明把答案写进 waiting 里的文件（filled 改成 true），再运行同一条命令",
