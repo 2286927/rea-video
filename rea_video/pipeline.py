@@ -22,7 +22,7 @@ from .motion import element_crops, motion_events, palette, strip_frames
 from .shots import build_track, detect_shots
 from .util import LOG, fmt_time, read_image, read_json, round_floats, write_json
 from . import aspects
-from .faces import shot_faces
+from .faces import MIN_AREA, shot_faces
 from .visual import LABEL_SHORT, shot_sheet, storyboard
 from .i18n import T, join, semi, set_lang
 from .vlm import SHOT_PROMPT, SILENT_NOTE, SOUND_NOTE, TAKE_NOTE, WHOLE_PROMPT, VLMClient, VLMConfig, normalize_shot_result, normalize_whole, prompt_lang_note, shot_hints, take_results, vlm_note
@@ -267,7 +267,7 @@ def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, 
         pic = [crop_box(f, lbox["box"]) for f in smp.frames] if lbox else smp.frames
         fd = shot_faces(pic)
         faces = fd["presence"]
-        areas = [p["face"]["area"] for p in fd["frames"] if p.get("face")]
+        areas = [p["face"]["area"] for p in fd["frames"] if p.get("face") and p["face"]["area"] >= MIN_AREA]
         feats["face_presence"] = faces
         feats["face_area"] = float(np.median(areas)) if areas else 0.0
         asp = aspects.measure_shot(pic, fd, feats, s.duration)

@@ -170,21 +170,29 @@ def _without_effect_hits(inst: np.ndarray, effects_wav: str | Path) -> np.ndarra
     from .effects import detect
 
     hits = detect(effects_wav)
-    r = subprocess.run(["ffmpeg", "-v", "error", "-i", str(effects_wav), "-ac", "2", "-ar", str(SR), "-f", "f32le", "-"], capture_output=True)
+    r = subprocess.run(["ffmpeg", "-v", "error", "-i", str(effects_wav), "-ac", "1", "-ar", str(SR), "-f", "f32le", "-"], capture_output=True)
     if not hits or r.returncode != 0 or not r.stdout:
         return inst
-    fx = np.frombuffer(r.stdout, np.float32).reshape(-1, 2).T
+    fx = np.frombuffer(r.stdout, np.float32)
     n = inst.shape[1]
-    if fx.shape[1] < n:
-        fx = np.pad(fx, ((0, 0), (0, n - fx.shape[1])))
-    fx = fx[:, :n]
-    gate = np.zeros(n, np.float32)
+    fx = np.pad(fx, (0, max(0, n - len(fx))))[:n]
+    sub = np.zeros_like(inst)
+    w = np.hanning(441).astype(np.float32)
+    w /= w.sum()
     for e in hits:
-        gate[max(0, int((e["t"] - 0.03) * SR)):min(n, int((e["t"] + e["dur"] + 0.08) * SR))] = 1
-    w = np.hanning(441)
-    gate = np.convolve(gate, w / w.sum(), "same").astype(np.float32)  # 10 ms edges, no clicks
-    sub = np.clip(gate * fx, -np.abs(inst), np.abs(inst))
-    return np.where(np.abs(inst) > 1e-4, inst - sub, inst)
+        a, z = max(0, int((e["t"] - 0.03) * SR)), min(n, int((e["t"] + e["dur"] + 0.08) * SR))
+        if z <= a:
+            continue
+        seg = fx[a:z]
+        denom = float(np.dot(seg, seg)) + 1e-8
+        gate = np.zeros(z - a, np.float32)
+        gate[:] = 1.0
+        if len(gate) > len(w):
+            gate = np.convolve(gate, w, "same").astype(np.float32)
+        for c in range(inst.shape[0]):
+            gain = float(np.clip(np.dot(inst[c, a:z], seg) / denom, 0.0, 1.5))
+            sub[c, a:z] = np.where(gate > 0, gain * gate * seg, sub[c, a:z])
+    return inst - sub
 
 
 SFX_DIR = "sfx"
