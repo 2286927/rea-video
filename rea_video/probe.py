@@ -147,7 +147,9 @@ def provenance(info: VideoInfo) -> dict:
         if short in CAMERA_KEYS:
             hints["camera"].append(f"{short}={value}")
         is_aigc_key = any(a in short for a in AIGC_KEYS)
-        parsed = parse_aigc(value) if (is_aigc_key or (short not in FREE_TEXT_KEYS and re.search(r"\baigc\b", value, re.I))) else None
+        parsed = parse_aigc(value) if is_aigc_key or re.search(r"\baigc\b", value, re.I) else None
+        if parsed and not is_aigc_key and short in FREE_TEXT_KEYS and parsed["label"] not in ("1", "2", "3"):
+            parsed = None  # typed text that mentions AIGC; a real label in a comment tag carries a valid value
         if parsed or is_aigc_key:
             cand = parsed or {"label": "", "meaning": T("无法解析", "could not be parsed"), "raw": value[:200]}
             strong = cand.get("label") in ("1", "2", "3")

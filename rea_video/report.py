@@ -11,6 +11,7 @@ import html
 import re
 from pathlib import Path
 
+from .readings import shot_description, shot_overlay_text
 from . import aspects, entities, narrative, performance, playbook
 from .classify import LABEL_ZH
 from .i18n import LangDict, T, join, lang, semi, shot_ids
@@ -949,8 +950,6 @@ def _clock(t: float) -> str:
 
 
 def _shotlist_md(b: dict) -> list[str]:
-    from .pipeline import shot_description
-
     told = narrative.shot_roles(b)
     mixed = len({r["base"]["label"] for r in b["shots"]}) > 1  # one kind throughout is already said at the top
     rows = []
@@ -977,8 +976,6 @@ def _questions_md(b: dict) -> list[str]:
 
 
 def _shot_detail_md(r: dict) -> list[str]:
-    from .pipeline import shot_description, shot_overlay_text
-
     base = r["base"]
     seen, measured = list(base.get("seen") or []), list(base.get("measured") or [])
     L = [f"![{r['id']}]({r['assets']['sheet']})", ""]

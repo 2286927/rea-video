@@ -21,6 +21,7 @@ Everything here is deterministic and best effort: styles and animations are meas
 or the agent's look at the frames still settles fine typography (font family) and odd cases."""
 from __future__ import annotations
 
+from .readings import shot_overlay_text
 from .i18n import LangDict, T, join
 
 import re
@@ -1892,8 +1893,6 @@ def finalize_pack(breakdown: dict, out: Path) -> dict | None:
     if not pack:
         return None
     out = Path(out)
-    from .pipeline import shot_overlay_text
-
     labels = {r["id"]: r["base"]["label"] for r in breakdown["shots"]}
     for c in pack.get("text_cues", []):
         mid = (c["t0"] + c["t1"]) / 2

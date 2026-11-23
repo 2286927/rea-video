@@ -18,6 +18,7 @@ from .media import cut_clip, extract_frame, extract_frames, require_tools, video
 from .overlay import ocr_frames, persistent_template, shot_ocr_frames, shot_ocr_items, static_overlays, summarize_text
 from .plan import Planner
 from .probe import provenance
+from .readings import shot_description, shot_overlay_text  # noqa: F401
 from .motion import element_crops, motion_events, palette, strip_frames
 from .shots import build_track, detect_shots
 from .util import LOG, fmt_time, read_image, read_json, round_floats, write_json
@@ -63,7 +64,7 @@ def vlm_units(records: list[dict], max_calls: int) -> list[list[dict]]:
 
 # modules that only run in finalize(): a change there needs no new decode. Everything else measures the video.
 _FINALIZE_ONLY = {"classify.py", "report.py", "plan.py", "production.py", "entities.py", "narrative.py", "review.py", "cli.py",
-                  "evaluate.py", "remake.py", "memory.py", "i18n.py", "visual.py", "__init__.py"}
+                  "evaluate.py", "remake.py", "memory.py", "i18n.py", "visual.py", "readings.py", "__init__.py"}
 _DECODE_FP: str | None = None
 
 
@@ -620,20 +621,6 @@ def _user_real(material: dict, real: bool) -> None:
     if not real and material["origin"] in ("real", "mixed"):
         material["origin"], material["origin_zh"] = "unknown", T("待确认（用户说不是真实素材）", "to confirm (user says it is not real material)")
     material["user_corrected"] = True
-
-
-def shot_description(rec: dict) -> str:
-    """Description of a shot's picture: an agent review overrides the VLM when non-empty."""
-    return ((rec.get("review") or {}).get("description") or (rec.get("vlm") or {}).get("description") or "").strip()
-
-
-def shot_overlay_text(rec: dict) -> list[str] | None:
-    """Post-production overlay words listed by an image reader: agent review overrides VLM when given."""
-    rv = (rec.get("review") or {}).get("overlay_text")
-    if isinstance(rv, list):
-        return rv
-    vl = (rec.get("vlm") or {}).get("overlay_text")
-    return vl if isinstance(vl, list) else None
 
 
 def visual_opinion(rec: dict) -> dict | None:

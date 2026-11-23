@@ -150,25 +150,24 @@ def _data_uri(path: Path, mime: str) -> str:
 
 
 def parse_json(text: str) -> dict:
+    """The answer object in a model's reply: the last complete top-level one, after any reasoning or example.
+    A reply cut off inside an object is an error, so the call is retried instead of keeping a fragment of it."""
     text = re.sub(r"<think>[\s\S]*?</think>", "", text or "", flags=re.I).strip()
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text)
     dec = json.JSONDecoder()
+    found = None
     pos = text.find("{")
     while pos != -1:
         try:
-            out, _ = dec.raw_decode(text, pos)
-            if isinstance(out, dict):
-                return out
+            found, end = dec.raw_decode(text, pos)
+            pos = text.find("{", end)
         except ValueError:
-            pass
-        pos = text.find("{", pos + 1)
-    m = re.search(r"\{[\s\S]*\}", text)
-    if not m:
+            if re.match(r"\{\s*\"", text[pos:]):
+                raise ValueError("incomplete JSON object in VLM response") from None
+            pos = text.find("{", pos + 1)  # a stray brace in the prose
+    if found is None:
         raise ValueError("no JSON object in VLM response")
-    out = json.loads(m.group(0))
-    if not isinstance(out, dict):
-        raise ValueError("VLM answer is not a JSON object")
-    return out
+    return found
 
 
 class VLMClient:

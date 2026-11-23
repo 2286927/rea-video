@@ -26,6 +26,7 @@ from pathlib import Path
 
 import yaml
 
+from .readings import shot_description
 from . import performance
 from .classify import LABEL_ZH
 from .i18n import T, join, lang, model_name, semi, shot_ids
@@ -209,8 +210,6 @@ def _clips(ranges: list[list[float]], each: float) -> list[list[list[float]]]:
 # ---------------------------------------------------------------- one unit
 def _shot_text(r: dict) -> str:
     """What happens in the shot, in the report's language when the reader wrote it in both."""
-    from .pipeline import shot_description
-
     p = shot_prompts(r)
     if lang() == "en" and p.get("video_prompt_en"):
         return p["video_prompt_en"]
@@ -218,8 +217,6 @@ def _shot_text(r: dict) -> str:
 
 
 def _brief(seg: list[dict], keyframe_tag: dict[int, str]) -> list[dict]:
-    from .pipeline import shot_description
-
     out, acc = [], 0.0
     for r in seg:
         act = performance.of(r)
@@ -449,13 +446,21 @@ def redrawn_frame(out: Path, name: str) -> Path | None:
     return next((f for ext in ("png", "jpg", "jpeg", "webp") if (f := Path(out) / REDRAWN_DIR / f"{name}.{ext}").is_file()), None)
 
 
+def part_frame_name(u: dict, part: int, key: str) -> str:
+    """The name of a frames unit's first / last frame; a unit generated in several calls has a pair per call."""
+    return f"{u['id']}_{key}" if int(u.get("calls") or 1) <= 1 else f"{u['id']}_p{part}_{key}"
+
+
+def wants_last_frame(u: dict) -> bool:
+    return any(x["kind"] == "last_frame" and x["need"] != "no" for x in u.get("inputs") or [])
+
+
 def source_frame_names(u: dict) -> list[str]:
     """The frames this unit takes from the source, by the name a redrawn version goes under."""
     names = [f"shot{int(r['keyframe']):03d}" for r in u.get("refs") or [] if r.get("keyframe")]
     if u.get("strategy") == "frames":
-        names.append(f"{u['id']}_first")
-        if any(x["kind"] == "last_frame" and x["need"] != "no" for x in u.get("inputs") or []):
-            names.append(f"{u['id']}_last")
+        keys = ("first", "last") if wants_last_frame(u) else ("first",)
+        names += [part_frame_name(u, part, key) for part in range(1, int(u.get("calls") or 1) + 1) for key in keys]
     return names
 
 
@@ -482,8 +487,8 @@ def checks(plan: dict, intent: dict, prompts: dict[str, str], notes: dict | None
     if spec.get("multi_ref") and not spec.get("images_stated"):
         add("warn", T("能力地图没写这个模型最多几张参考图，按 {n} 张排的；查到实际数后补进模型资料", "the capability map has no image limit for this model; planned for {n}, add the real one", n=UNKNOWN_IMAGES))
     if spec.get("exclusive") and plan.get("strategy") == "frames" and any(s.get("image") for s in intent.get("swaps") or []):
-        add("warn", T("当前模型在首尾帧模式下不接收额外参考图：先把替换主体画进每段首帧（remake/redrawn/<单元>_first.png）再生成",
-                      "in first/last-frame mode this model takes no extra reference images: redraw each unit's first frame (remake/redrawn/<unit>_first.png) with the swapped subject first"))
+        add("warn", T("当前模型在首尾帧模式下不接收额外参考图：先把替换主体画进每段的参考帧（存进 remake/redrawn/，文件名见各单元的提示）再生成",
+                      "in first/last-frame mode this model takes no extra reference images: redraw each part's reference frames with the swapped subject first (into remake/redrawn/, named in each unit's warning)"))
     for u in units:
         n_img, n_vid = len(unit_images(u)), len({r["tag"] for r in u["refs"] if r["tag"].startswith("@视频")})
         if spec.get("images") is not None and n_img > max(spec["images"], 0) and (n_img or spec.get("multi_ref")):

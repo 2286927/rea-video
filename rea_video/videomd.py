@@ -19,6 +19,7 @@ from pathlib import Path
 
 import yaml
 
+from .readings import shot_description
 from . import entities, narrative, performance
 from .classify import LABEL_ZH
 from .i18n import T, join
@@ -110,7 +111,6 @@ def _transition_in(r: dict) -> dict:
 
 
 def timeline_line(r: dict, roles: dict, units: dict) -> str:
-    from .pipeline import shot_description
     from .report import CAMERA_ZH, _layers, _origin, _route
 
     base = r["base"]
@@ -347,8 +347,6 @@ def _description(b: dict) -> str:
 def _about(b: dict) -> str:
     """What the video shows or says, from the best source this run has: the whole-video read, the story beats, what
     the shots show, the opening lines, the file's title. Empty only when none of them says anything."""
-    from .pipeline import shot_description
-
     whole = _one_line((b.get("review_story") or {}).get("summary") or (b.get("whole_video_vlm") or {}).get("summary"), 600)
     if whole:
         return whole

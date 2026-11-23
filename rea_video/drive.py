@@ -22,6 +22,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .readings import shot_overlay_text
 from . import dance
 from .i18n import T, semi, shot_ids
 from .media import iter_frames, scaled_size, video_info
@@ -70,8 +71,6 @@ def overlays(b: dict, persistent: bool = False) -> list[dict]:
             continue
         if int(c.get("samples") or 0) < MIN_SAMPLES:
             continue  # a flicker read: printing on a dancer's clothes, caught for a frame or two as it turns past
-        from .pipeline import shot_overlay_text
-
         mid = (c["t0"] + c["t1"]) / 2
         r = next((r for r in b.get("shots", []) if r["start"] <= mid < r["end"]), None) or {}
         said = shot_overlay_text(r)

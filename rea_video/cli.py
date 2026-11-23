@@ -417,27 +417,11 @@ def cmd_capsule_draft(args) -> int:
     return _run_integration("to_capsule.py", _capsule_python(args.python, root), argv)
 
 
-def _has_capsule_script(args) -> bool:
-    from .memory import capsule_root
-
-    root = capsule_root(getattr(args, "capsule_root", None))
-    return (root / "scripts" / "remake_reference.py").is_file()
-
-
 def cmd_assemble(args) -> int:
-    if getattr(args, "capsule_root", None) or _has_capsule_script(args):
-        pkg = Path(args.breakdown).expanduser().resolve().parent
-        argv = ["assemble", str(pkg), "--results", str(Path(args.results).expanduser().resolve())]
-        argv += ["-o", str(Path(args.out).expanduser().resolve())] if args.out else []
-        return _capsule_command(args, argv + ([] if args.overlays else ["--no-overlays"]))
-    from .remake import assemble
-
-    bpath = Path(args.breakdown).expanduser().resolve()
-    out_dir = Path(args.out).expanduser().resolve() if args.out else (bpath.parent / "remake")
-    code_mp4 = bpath.parent / "code" / "remake.mp4"
-    print(assemble(bpath, Path(args.results).expanduser().resolve(), out_dir, overlays=args.overlays,
-                   code_video=code_mp4 if code_mp4.is_file() else None))
-    return 0
+    pkg = Path(args.breakdown).expanduser().resolve().parent
+    argv = ["assemble", str(pkg), "--results", str(Path(args.results).expanduser().resolve())]
+    argv += ["-o", str(Path(args.out).expanduser().resolve())] if args.out else []
+    return _capsule_command(args, argv + ([] if args.overlays else ["--no-overlays"]))
 
 
 def cmd_tiles(args) -> int:
@@ -550,33 +534,27 @@ def cmd_compare(args) -> int:
 
 
 def cmd_remake(args) -> int:
-    """The plan is rea-video's; Capsule Cinema takes it from there when installed, else local DIY remake runs."""
+    """The plan is rea-video's; Capsule Cinema takes it from there (stills, clips in, assembly, status, check)."""
     out = Path(args.out_dir).expanduser().resolve()
     if not (out / "breakdown.json").is_file():
         raise SystemExit(U(f"rea-video: {out} 下没有 breakdown.json，先运行 decompose", f"rea-video: no breakdown.json in {out}, run decompose first"))
-    if getattr(args, "capsule_root", None) or _has_capsule_script(args):
-        if args.code:
-            from .code_remake import code_remake
+    if args.code:
+        from .code_remake import code_remake
 
-            b = read_json(out / "breakdown.json")
-            if any(sh["base"]["label"] == "code_render" for sh in b["shots"]) and not (out / "code" / "remake.mp4").is_file():
-                try:
-                    code_remake(out)
-                except (ValueError, OSError, RuntimeError) as exc:
-                    print(f"rea-video: code-remake: {exc}", file=sys.stderr)
-        args.breakdown = str(out / "breakdown.json")
-        args.capsule_root = getattr(args, "capsule_root", None)
-        root = _capsule_root(args)
-        args.capsule_root = str(root)
-        rc = cmd_remake_plan(args)
-        if rc:
-            return rc
-        return _capsule_command(args, ["assemble", str(out)] + (["--no-overlays"] if args.no_overlays else []))
-    from .remake import remake
-
-    res = remake(out, code=args.code, overlays=not args.no_overlays)
-    print(json.dumps(res, ensure_ascii=False, indent=2))
-    return 0
+        b = read_json(out / "breakdown.json")
+        if any(sh["base"]["label"] == "code_render" for sh in b["shots"]) and not (out / "code" / "remake.mp4").is_file():
+            try:
+                code_remake(out)
+            except (ValueError, OSError, RuntimeError) as exc:
+                print(f"rea-video: code-remake: {exc}", file=sys.stderr)
+    args.breakdown = str(out / "breakdown.json")
+    args.capsule_root = getattr(args, "capsule_root", None)
+    root = _capsule_root(args)
+    args.capsule_root = str(root)
+    rc = cmd_remake_plan(args)
+    if rc:
+        return rc
+    return _capsule_command(args, ["assemble", str(out)] + (["--no-overlays"] if args.no_overlays else []))
 
 
 def cmd_code_remake(args) -> int:

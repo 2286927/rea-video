@@ -21,7 +21,7 @@ from . import __version__
 from .util import LOG
 
 API = "https://generativelanguage.googleapis.com"
-DEFAULT_MODEL = "gemini-3.5-flash"
+DEFAULT_MODEL = "gemini-3.7-flash"
 INLINE_MAX = 14 * 1024 * 1024  # base64 adds 33%: 14 MB raw -> ~18.7 MB body, under Gemini's 20 MB inline limit
 CLIP_FPS = ((30.0, 10.0), (120.0, 4.0))  # (clips up to s, frames a second); longer: Gemini's default (1)
 

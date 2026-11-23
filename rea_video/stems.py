@@ -176,22 +176,24 @@ def _without_effect_hits(inst: np.ndarray, effects_wav: str | Path) -> np.ndarra
     fx = np.frombuffer(r.stdout, np.float32)
     n = inst.shape[1]
     fx = np.pad(fx, (0, max(0, n - len(fx))))[:n]
-    sub = np.zeros_like(inst)
-    w = np.hanning(441).astype(np.float32)
-    w /= w.sum()
-    for e in hits:
+    spans: list[list[int]] = []
+    for e in sorted(hits, key=lambda e: e["t"]):
         a, z = max(0, int((e["t"] - 0.03) * SR)), min(n, int((e["t"] + e["dur"] + 0.08) * SR))
         if z <= a:
             continue
+        if spans and a <= spans[-1][1]:  # effects that overlap are one stretch, with one gain
+            spans[-1][1] = max(spans[-1][1], z)
+        else:
+            spans.append([a, z])
+    sub = np.zeros_like(inst)
+    w = np.hanning(441).astype(np.float32)
+    w /= w.sum()
+    for a, z in spans:
         seg = fx[a:z]
         denom = float(np.dot(seg, seg)) + 1e-8
-        gate = np.zeros(z - a, np.float32)
-        gate[:] = 1.0
-        if len(gate) > len(w):
-            gate = np.convolve(gate, w, "same").astype(np.float32)
+        gate = np.convolve(np.ones(z - a, np.float32), w, "same").astype(np.float32) if z - a > len(w) else 1.0  # 10 ms edges
         for c in range(inst.shape[0]):
-            gain = float(np.clip(np.dot(inst[c, a:z], seg) / denom, 0.0, 1.5))
-            sub[c, a:z] = np.where(gate > 0, gain * gate * seg, sub[c, a:z])
+            sub[c, a:z] = float(np.clip(np.dot(inst[c, a:z], seg) / denom, 0.0, 1.5)) * gate * seg
     return inst - sub
 
 
