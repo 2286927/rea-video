@@ -74,6 +74,11 @@ def set_pref(key: str, value: str | None) -> dict:
         raise ValueError(U(f"ocr_lang 只能是 {' / '.join(OCR_LANGS)}", f"ocr_lang must be one of: {' / '.join(OCR_LANGS)}"))
     if value is not None and key == "asr_lang" and value not in ASR_LANGS:
         raise ValueError(U(f"asr_lang 只能是 {' / '.join(ASR_LANGS)}", f"asr_lang must be one of: {' / '.join(ASR_LANGS)}"))
+    if value is not None and key == "lang":
+        from .i18n import LANGS
+
+        if value not in LANGS:
+            raise ValueError(U(f"lang 只能是 {' / '.join(LANGS)}", f"lang must be one of: {' / '.join(LANGS)}"))
     if value is not None and key in ("env_file", "capsule_root"):
         value = str(Path(value).expanduser().resolve())
     prefs = load_prefs()

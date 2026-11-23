@@ -66,13 +66,16 @@ def ensure_model(force: bool = False) -> Path:
 def _session():
     import onnxruntime as ort
 
+    so = ort.SessionOptions()
+    so.intra_op_num_threads = MODEL_THREADS
+    so.inter_op_num_threads = 1
     try:
-        return ort.InferenceSession(str(ensure_model()), providers=["CPUExecutionProvider"])
+        return ort.InferenceSession(str(ensure_model()), sess_options=so, providers=["CPUExecutionProvider"])
     except Exception as e:  # corrupted cache (e.g. an older interrupted download): fetch again once
         if "protobuf" not in str(e).lower() and "load model" not in str(e).lower():
             raise
         LOG.warning("cached stem model is unreadable (%s); downloading again", str(e)[:120])
-        return ort.InferenceSession(str(ensure_model(force=True)), providers=["CPUExecutionProvider"])
+        return ort.InferenceSession(str(ensure_model(force=True)), sess_options=so, providers=["CPUExecutionProvider"])
 
 
 def load_stereo(path: str | Path) -> np.ndarray | None:
@@ -167,18 +170,21 @@ def _without_effect_hits(inst: np.ndarray, effects_wav: str | Path) -> np.ndarra
     from .effects import detect
 
     hits = detect(effects_wav)
-    r = subprocess.run(["ffmpeg", "-v", "error", "-i", str(effects_wav), "-ac", "1", "-ar", str(SR), "-f", "f32le", "-"], capture_output=True)
+    r = subprocess.run(["ffmpeg", "-v", "error", "-i", str(effects_wav), "-ac", "2", "-ar", str(SR), "-f", "f32le", "-"], capture_output=True)
     if not hits or r.returncode != 0 or not r.stdout:
         return inst
-    fx = np.frombuffer(r.stdout, np.float32)
+    fx = np.frombuffer(r.stdout, np.float32).reshape(-1, 2).T
     n = inst.shape[1]
-    fx = np.pad(fx, (0, max(0, n - len(fx))))[:n]
+    if fx.shape[1] < n:
+        fx = np.pad(fx, ((0, 0), (0, n - fx.shape[1])))
+    fx = fx[:, :n]
     gate = np.zeros(n, np.float32)
     for e in hits:
         gate[max(0, int((e["t"] - 0.03) * SR)):min(n, int((e["t"] + e["dur"] + 0.08) * SR))] = 1
     w = np.hanning(441)
     gate = np.convolve(gate, w / w.sum(), "same").astype(np.float32)  # 10 ms edges, no clicks
-    return inst - gate * fx
+    sub = np.clip(gate * fx, -np.abs(inst), np.abs(inst))
+    return np.where(np.abs(inst) > 1e-4, inst - sub, inst)
 
 
 SFX_DIR = "sfx"
@@ -199,9 +205,11 @@ def cut_sfx(src: str | Path, sfx: list[dict], out_dir: str | Path, limit: int = 
         src = fx
     if not sfx or not Path(src).is_file():
         return 0
+    picks = [(k, sfx[g["rep"]]) for k, g in enumerate(groups, 1)] if groups is not None else list(enumerate(sfx[:limit], 1))
+    if not picks:
+        return 0
     d.mkdir(parents=True, exist_ok=True)
     n = 0
-    picks = [(k, sfx[g["rep"]]) for k, g in enumerate(groups, 1)] if groups else list(enumerate(sfx[:limit], 1))
     for i, e in picks[:limit]:
         t = float(e.get("t", 0.0))
         a = max(0.0, t - 0.12)  # a little lead-in so the attack is heard

@@ -67,8 +67,9 @@ def export_capsule_analysis(b: dict, out_path: Path, keep_source_text: bool = Fa
     mix_txt = "、".join(f"{m['label_zh']} {m['ratio']:.0%}" for m in s["production_mix"])
     segments = []
     literals: list[str] = []
+    from ..pipeline import shot_description
+
     for sh in shots:
-        v = sh.get("vlm") or {}
         f = sh["features"]
         copy = _shot_copy(sh) if keep_source_text else ""
         literals += [t for t in copy.split(" / ") if len(t) >= 2]
@@ -78,7 +79,7 @@ def export_capsule_analysis(b: dict, out_path: Path, keep_source_text: bool = Fa
         segments.append({
             "start_time": _mmss(sh["start"]), "end_time": _mmss(sh["end"]),
             "beat": f"镜头 {sh['index']}（{sh['duration']:.1f}s）",
-            "visuals": f"[{sh['base']['label_zh']} {sh['base']['confidence']:.0%}] " + ((v.get("description") or sh["verdict"]) if keep_source_text else "按原片的景别和机位重新设计内容"),
+            "visuals": f"[{sh['base']['label_zh']} {sh['base']['confidence']:.0%}] " + ((shot_description(sh) or sh["verdict"]) if keep_source_text else "按原片的景别和机位重新设计内容"),
             "material": (sh.get("material") or {}).get("origin_zh", ""),
             "motion": motion, "copy": copy,
             "audio": "",
@@ -327,7 +328,7 @@ def _unit_jobs(b: dict, bdir: Path, run_dir: Path, plan: dict, prompts: dict[str
             if images:
                 params["image_paths"] = [x["path"] for x in images]
             if u["strategy"] == "frames":
-                first, last = files.get((1, "first")), files.get((1, "last"))
+                first, last = files.get((part, "first")) or files.get((1, "first")), files.get((part, "last")) or files.get((1, "last"))
                 if last:
                     params.update(start_image_path=first, end_image_path=last)
                 else:
@@ -335,7 +336,12 @@ def _unit_jobs(b: dict, bdir: Path, run_dir: Path, plan: dict, prompts: dict[str
             jid = u["id"] if len(parts) == 1 else f"{u['id']}-{part}"
             times = [r["t"] for r in u["refs"] if r.get("keyframe") and not redrawn_frame(bdir, f"shot{int(r['keyframe']):03d}")]
             if u["strategy"] == "frames":
-                times += [t for name, t in ((f"{u['id']}_first", u["start"] + 0.05), (f"{u['id']}_last", u["end"] - 0.08)) if not redrawn_frame(bdir, name)]
+                span = max(0.0, u["end"] - u["start"])
+                ps0 = u["start"] + span * (part - 1) / max(1, len(parts))
+                ps1 = u["start"] + span * part / max(1, len(parts))
+                pd = max(0.0, ps1 - ps0)
+                t_first, t_last = min(ps1, ps0 + min(0.05, pd / 4)), max(ps0, ps1 - min(0.08, pd / 4))
+                times += [t for name, t in ((f"{u['id']}_first", t_first), (f"{u['id']}_last", t_last)) if not redrawn_frame(bdir, name)]
             words = list(dict.fromkeys(w for t in times for w in scene_text(b, t)))
             warning = T("参考帧里还有画面内文字（{w}），模型可能照着生成：换成干净图，或确认有授权", "the reference frames still show text in the picture ({w}), which the model may copy: use a clean image or confirm you have the rights",
                         w=join(words[:6])) if words else None
@@ -369,11 +375,18 @@ def ref_clips(b: dict, bdir: Path, unit: dict) -> dict[tuple[int, str], str]:
             out[(r.get("part", 1), r["tag"])] = str(f.resolve())
     if unit.get("strategy") == "frames":
         s0, s1 = unit["start"], unit["end"]
-        for key, t in (("first", s0 + 0.05), ("last", s1 - 0.08)):
-            if key == "last" and not any(x["kind"] == "last_frame" and x["need"] != "no" for x in unit.get("inputs") or []):
-                continue
-            f = redrawn_frame(bdir, f"{unit['id']}_{key}") or d / f"{unit['id']}_{key}_{t:.2f}.jpg"
-            if not f.is_file():
-                clean_frame(b, t, f)
-            out[(1, key)] = str(f.resolve())
+        n_parts = max(1, int(unit.get("calls") or 1))
+        want_last = any(x["kind"] == "last_frame" and x["need"] != "no" for x in unit.get("inputs") or [])
+        for part in range(1, n_parts + 1):
+            ps0 = s0 + (s1 - s0) * (part - 1) / n_parts
+            ps1 = s0 + (s1 - s0) * part / n_parts
+            pd = max(0.0, ps1 - ps0)
+            for key, t in (("first", min(ps1, ps0 + min(0.05, pd / 4))), ("last", max(ps0, ps1 - min(0.08, pd / 4)))):
+                if key == "last" and not want_last:
+                    continue
+                red = redrawn_frame(bdir, f"{unit['id']}_{key}" if n_parts == 1 else f"{unit['id']}_p{part}_{key}") or (redrawn_frame(bdir, f"{unit['id']}_{key}") if part == 1 else None)
+                f = red or d / f"{unit['id']}_p{part}_{key}_{t:.2f}.jpg" if n_parts > 1 else (red or d / f"{unit['id']}_{key}_{t:.2f}.jpg")
+                if not f.is_file():
+                    clean_frame(b, t, f)
+                out[(part, key)] = str(f.resolve())
     return out

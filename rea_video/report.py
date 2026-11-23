@@ -949,12 +949,14 @@ def _clock(t: float) -> str:
 
 
 def _shotlist_md(b: dict) -> list[str]:
+    from .pipeline import shot_description
+
     told = narrative.shot_roles(b)
     mixed = len({r["base"]["label"] for r in b["shots"]}) > 1  # one kind throughout is already said at the top
     rows = []
     for r in b["shots"]:
         base = r["base"]
-        desc = ((r.get("vlm") or r.get("review") or {}).get("description") or "").replace("\n", " ")
+        desc = shot_description(r).replace("\n", " ")
         n = told.get(r["index"]) or {}
         says = (n.get("role_zh") or "") + (_colon() if n.get("role_zh") and n.get("point") else "") + (n.get("point") or "")
         a = r.get("assets") or {}
@@ -975,14 +977,16 @@ def _questions_md(b: dict) -> list[str]:
 
 
 def _shot_detail_md(r: dict) -> list[str]:
+    from .pipeline import shot_description, shot_overlay_text
+
     base = r["base"]
     seen, measured = list(base.get("seen") or []), list(base.get("measured") or [])
     L = [f"![{r['id']}]({r['assets']['sheet']})", ""]
     # what you can check against the frames
     L.append(T("**画面里看得到的**（可以对照截图核实）", "**Visible on screen** (check against the frames)"))
-    v = r.get("vlm") or r.get("review") or {}
-    if v.get("description"):
-        L.append(T("- 画面：{d}", "- Picture: {d}", d=v["description"]))
+    desc = shot_description(r)
+    if desc:
+        L.append(T("- 画面：{d}", "- Picture: {d}", d=desc))
     act = performance.of(r)
     if act:
         L.append(T("- 表演：{a}", "- Acting: {a}", a=performance.summary(act))
@@ -993,8 +997,7 @@ def _shot_detail_md(r: dict) -> list[str]:
     if base.get("scene_text"):
         L.append(T("- 画面里物体上的字（不是后期字幕）：", "- Text on objects in the scene (not subtitles): ") + join(base["scene_text"][:6]))
     intrinsic = base["label"] in ("code_render", "screen_capture")
-    said = (r.get("vlm") or {}).get("overlay_text")
-    said = said if isinstance(said, list) else (r.get("review") or {}).get("overlay_text")
+    said = shot_overlay_text(r)
     from .classify import _same_words
 
     for tr in r.get("text", {}).get("tracks", [])[:4]:
@@ -1058,7 +1061,19 @@ def _appendix_md(b: dict) -> list[str]:
     return L
 
 
-def markdown(b: dict, credit: bool = True) -> str:
+def _expand_md_marks(lines: list[str], b: dict) -> list[str]:
+    out = []
+    for ln in lines:
+        if ln == _MIX_MARK:
+            continue
+        if ln == _STEMS_MARK:
+            out.extend(f"- {name}{_colon()}[stems/{f}](stems/{f})" for f, name in _stem_tracks(b))
+        else:
+            out.append(ln)
+    return out
+
+
+def markdown(b: dict, credit: bool = True, html_marks: bool = False) -> str:
     # what it is and why it works, how it is told and cut, how to remake it, then the reference detail
     # part one is the breakdown (what is there and how it was made, the same whatever model you use); part two is the
     # remake, planned for one model; the reference detail closes the report
@@ -1068,6 +1083,8 @@ def markdown(b: dict, credit: bool = True) -> str:
     L = (_head_md(b) + part1 + _highlights_md(b) + _moments_md(b) + _layers_md(b) + _content_md(b, user=True) + _shotlist_md(b)
          + _cast_md(b) + _visual_md(b, user=True) + packaging_md(b) + _audio_md(b) + _questions_md(b)
          + _plan_md(b) + _appendix_md(b))
+    if not html_marks:
+        L = _expand_md_marks(L, b)
     if credit:
         L += ["", "---", "", T("由 [REA-VIDEO]({u}) 生成 · {u}", "Made with [REA-VIDEO]({u}) · {u}", u=PROJECT_URL)]
     text = re.sub(r"\[[\w.-]*agent 看图\]", "[AI 看图]", "\n".join(L))  # who reviewed it is in breakdown.json
@@ -1359,7 +1376,7 @@ details{padding:0;border:0} summary{color:var(--fg)} a{color:inherit}}
 
 
 def html_report(b: dict) -> str:
-    body = _md_to_html(markdown(b, credit=False).split("\n"), b)
+    body = _md_to_html(markdown(b, credit=False, html_marks=True).split("\n"), b)
     tagline = T("视频逆向拆解报告", "Video breakdown report")
     return (f"<!doctype html><html lang=\"{lang()}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
             f"<meta name=\"generator\" content=\"REA-VIDEO\"><title>{T('拆解：', 'Breakdown: ')}{html.escape(b['source']['filename'])} · REA-VIDEO</title><style>{_CSS}</style></head><body>"

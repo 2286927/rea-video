@@ -209,19 +209,23 @@ def _clips(ranges: list[list[float]], each: float) -> list[list[list[float]]]:
 # ---------------------------------------------------------------- one unit
 def _shot_text(r: dict) -> str:
     """What happens in the shot, in the report's language when the reader wrote it in both."""
+    from .pipeline import shot_description
+
     p = shot_prompts(r)
     if lang() == "en" and p.get("video_prompt_en"):
         return p["video_prompt_en"]
-    return p.get("video_prompt") or (r.get("review") or r.get("vlm") or {}).get("description") or ""
+    return p.get("video_prompt") or shot_description(r)
 
 
 def _brief(seg: list[dict], keyframe_tag: dict[int, str]) -> list[dict]:
+    from .pipeline import shot_description
+
     out, acc = [], 0.0
     for r in seg:
         act = performance.of(r)
         out.append({"shot": r["index"], "time": [round(r["start"], 3), round(r["end"], 3)], "at": round(acc, 3),
                     "duration": round(r["duration"], 3), "label": r["base"]["label"],
-                    "source": (r.get("review") or r.get("vlm") or {}).get("description") or "",
+                    "source": shot_description(r),
                     "action": with_acting(_shot_text(r), act, en=lang() == "en"), "framing": framing_words(r)[0],
                     "composition": keyframe_tag.get(r["index"]), **({"acting": performance.summary(act)} if act else {})})
         acc += r["duration"]
@@ -297,6 +301,9 @@ def build_unit(seg: list[dict], k: int, strategy: str, spec: dict, own: list[dic
     label = max(votes.items(), key=lambda kv: kv[1])[0]
     parts = int(-(-dur // spec["max"])) if len(seg) == 1 and dur > spec["max"] + 1e-6 else 1
     refs = [dict(r) for r in own] if strategy != "frames" or not spec["exclusive"] else []
+    kept_tags = {r["tag"] for r in refs}
+    unit_swaps = [re.sub(r"（参考 @图片\d+）| \(see @图片\d+\)", "", t) if not any(k in t for k in kept_tags) else t
+                  for t in swaps_txt]
     keyframe_tag: dict[int, str] = {}
     if strategy == "remix":
         each = min(REF_CLIP_S, spec["ref_total"])
@@ -324,7 +331,7 @@ def build_unit(seg: list[dict], k: int, strategy: str, spec: dict, own: list[dic
             "shots": [r["index"] for r in seg], "start": round(t0, 3), "end": round(t1, 3), "duration": dur, "ranges": ranges,
             "mode": "multi_shot" if len(seg) > 1 else ("split" if parts > 1 else "single"), "calls": parts,
             "generate_s": round(dur / parts, 3), "model": (model or {}).get("id"), "model_name": model_name((model or {}).get("name")),
-            "refs": refs, "brief": brief, "draft": _draft(strategy, refs, brief, swaps_txt, style),
+            "refs": refs, "brief": brief, "draft": _draft(strategy, refs, brief, unit_swaps, style),
             "inputs": _inputs(strategy, refs, seg, spec)}
     unframed = [x["shot"] for x in brief if strategy == "keyframes" and not x.get("composition")]
     missing = [x["shot"] for x in brief if not x["action"]]
@@ -474,12 +481,19 @@ def checks(plan: dict, intent: dict, prompts: dict[str, str], notes: dict | None
             add("error", T("参考图找不到，请重新提供：{p}", "reference image missing, provide it again: {p}", p=Path(s["image"]).name))
     if spec.get("multi_ref") and not spec.get("images_stated"):
         add("warn", T("能力地图没写这个模型最多几张参考图，按 {n} 张排的；查到实际数后补进模型资料", "the capability map has no image limit for this model; planned for {n}, add the real one", n=UNKNOWN_IMAGES))
+    if spec.get("exclusive") and plan.get("strategy") == "frames" and any(s.get("image") for s in intent.get("swaps") or []):
+        add("warn", T("当前模型在首尾帧模式下不接收额外参考图：先把替换主体画进每段首帧（remake/redrawn/<单元>_first.png）再生成",
+                      "in first/last-frame mode this model takes no extra reference images: redraw each unit's first frame (remake/redrawn/<unit>_first.png) with the swapped subject first"))
     for u in units:
         n_img, n_vid = len(unit_images(u)), len({r["tag"] for r in u["refs"] if r["tag"].startswith("@视频")})
         if spec.get("images") is not None and n_img > max(spec["images"], 0) and (n_img or spec.get("multi_ref")):
             add("error", T("{u} 要传 {n} 张图，超过这个模型的 {m} 张", "{u} sends {n} images, over this model's {m}", u=u["id"], n=n_img, m=spec["images"]), u["id"])
         for part in sorted({r.get("part", 1) for r in u["refs"] if r["tag"].startswith("@视频")}):
-            secs = sum(z - a for r in u["refs"] if r["tag"].startswith("@视频") and r.get("part", 1) == part for a, z in r["ranges"])
+            part_vids = [r for r in u["refs"] if r["tag"].startswith("@视频") and r.get("part", 1) == part]
+            if len(part_vids) > max(1, int(spec.get("ref_videos") or 1)):
+                add("error", T("{u} 单次要传 {n} 段参考视频，超过这个模型的 {m} 段", "{u} sends {n} reference clips in one call, over this model's {m}",
+                               u=u["id"], n=len(part_vids), m=spec.get("ref_videos", 1)), u["id"])
+            secs = sum(z - a for r in part_vids for a, z in r["ranges"])
             if secs > spec.get("ref_total", 1e9) + 1e-3:
                 add("error", T("{u} 参考视频共 {s:.1f} 秒，超过这个模型的 {m:.0f} 秒", "{u} has {s:.1f}s of reference video, over this model's {m:.0f}s",
                                u=u["id"], s=secs, m=spec["ref_total"]), u["id"])

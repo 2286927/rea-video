@@ -150,8 +150,18 @@ def _data_uri(path: Path, mime: str) -> str:
 
 
 def parse_json(text: str) -> dict:
-    text = text.strip()
+    text = re.sub(r"<think>[\s\S]*?</think>", "", text or "", flags=re.I).strip()
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text)
+    dec = json.JSONDecoder()
+    pos = text.find("{")
+    while pos != -1:
+        try:
+            out, _ = dec.raw_decode(text, pos)
+            if isinstance(out, dict):
+                return out
+        except ValueError:
+            pass
+        pos = text.find("{", pos + 1)
     m = re.search(r"\{[\s\S]*\}", text)
     if not m:
         raise ValueError("no JSON object in VLM response")
@@ -237,7 +247,9 @@ class VLMClient:
         content = build(part)
         last: Exception | None = None
         refused = False
-        for model in list(self.models):
+        with self._lock:
+            models_snapshot = list(self.models)
+        for model in models_snapshot:
             for attempt in range(2):
                 try:
                     t = time.time()

@@ -95,7 +95,7 @@ def _portable_breakdown(data: Any, root: Path) -> Any:
         return data
     src = dict(data["source"])
     path = str(src.get("path") or "")
-    if path and (Path(path).is_absolute() or Path(path).is_file()):
+    if path and Path(path).is_file():
         _remember_source(src, str(Path(path).resolve()))
     if path:
         src["path"] = src.get("filename") or Path(path).name

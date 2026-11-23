@@ -1641,8 +1641,8 @@ def to_ass(cues: list[dict], width: int, height: int) -> str:
         elif ak == "fade" or (c.get("anim_out") or {}).get("kind") == "fade_out":
             tags += "\\fad(200,200)"
         # OCR text is literal: "{...}" would be read as override tags and "\\" as an escape
-        text = c["text"].replace("\\", "＼").replace("{", "｛").replace("}", "｝")
-        text = "\\N".join(text) if vertical else text.replace("/", "\\N")
+        text = c["text"].replace("\r\n", "\n").replace("\r", "\n").replace("\\", "＼").replace("{", "｛").replace("}", "｝")
+        text = "\\N".join(text.replace("\n", "")) if vertical else text.replace("\n", "\\N").replace("/", "\\N")
         events.append(f"Dialogue: {0 if c['kind'] == 'subtitle' else 1},{_ts(c['t0'], '.')[1:-1]},{_ts(c['t1'], '.')[1:-1]},{name},,0,0,0,,{{{tags}}}{text}")
     return "\n".join(head + list(styles.values()) + ["", "[Events]",
                      "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"] + events) + "\n"
@@ -1892,6 +1892,8 @@ def finalize_pack(breakdown: dict, out: Path) -> dict | None:
     if not pack:
         return None
     out = Path(out)
+    from .pipeline import shot_overlay_text
+
     labels = {r["id"]: r["base"]["label"] for r in breakdown["shots"]}
     for c in pack.get("text_cues", []):
         mid = (c["t0"] + c["t1"]) / 2
@@ -1900,8 +1902,7 @@ def finalize_pack(breakdown: dict, out: Path) -> dict | None:
         # on a rendered / recorded picture, words are the picture's content, not a separate overlay
         c["part_of_picture"] = bool(r and labels[r["id"]] in ("code_render", "screen_capture") and c["kind"] not in ("subtitle",))
         # an image reader listed this shot's post-production words: the rest is text filmed in the scene
-        said = r and ((r.get("vlm") or {}).get("overlay_text") if isinstance((r.get("vlm") or {}).get("overlay_text"), list)
-                      else (r.get("review") or {}).get("overlay_text"))
+        said = shot_overlay_text(r) if r else None
         if isinstance(said, list) and not any(_same_words(c["text"], o) for o in said):  # [] = no post words in this shot
             c["part_of_picture"] = True
     src = breakdown.get("source") or {}

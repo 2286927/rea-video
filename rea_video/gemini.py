@@ -21,8 +21,8 @@ from . import __version__
 from .util import LOG
 
 API = "https://generativelanguage.googleapis.com"
-DEFAULT_MODEL = "gemini-3.7-flash"
-INLINE_MAX = 18 * 1024 * 1024  # request bodies over ~20 MB must use the Files API
+DEFAULT_MODEL = "gemini-3.5-flash"
+INLINE_MAX = 14 * 1024 * 1024  # base64 adds 33%: 14 MB raw -> ~18.7 MB body, under Gemini's 20 MB inline limit
 CLIP_FPS = ((30.0, 10.0), (120.0, 4.0))  # (clips up to s, frames a second); longer: Gemini's default (1)
 
 
@@ -85,10 +85,14 @@ class GeminiClient:
                                                            "X-Goog-Upload-Command": "upload, finalize"}, timeout=3600.0)
         info = json.loads(body)["file"]
         waited = 0.0
-        while info.get("state") == "PROCESSING" and waited < max_wait:
-            time.sleep(2.0)
-            waited += 2.0
-            info = json.loads(self._call("GET", f"{API}/v1beta/{info['name']}")[1])
+        try:
+            while info.get("state") == "PROCESSING" and waited < max_wait:
+                time.sleep(2.0)
+                waited += 2.0
+                info = json.loads(self._call("GET", f"{API}/v1beta/{info['name']}")[1])
+        except Exception:
+            self._delete(info.get("name", ""))
+            raise
         if info.get("state") != "ACTIVE":
             self._delete(info.get("name", ""))
             raise GeminiError(f"uploaded file state {info.get('state')}")

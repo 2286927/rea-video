@@ -1,0 +1,13 @@
+# 魔术 / 藏剪辑评测集：画面里东西凭空出现的短视频。视频不入库（eval/media/ 已 gitignore）。
+# 真值来源：人工逐帧目测（2026-11-20），「存疑」：素材是平台转出的 12fps 无声 GIF，手法本身没有原片确认。
+# cuts：硬切 / 跳剪。sudden：没有剪断、局部一帧内出现东西的位置，box 是 x0,y0,x1,y1（0-1）。
+videos:
+  - id: mukbang_hidden_edit
+    path: eval/media/mukbang_hidden_edit.mp4
+    label: [live_action, ai_video]   # 人和场景像实拍，食物出现的方式未确认
+    source: 用户实测案例，X 上转发的吃播片段（4.6 秒 GIF），人工逐帧目测，存疑
+    cuts: [1.67, 3.50]
+    cut_tolerance: 0.1
+    sudden:
+      - {t: 0.29, box: [0.25, 0.50, 0.80, 0.85]}   # 螺旋薯塔从只有面的碗里出现
+      - {t: 2.00, box: [0.25, 0.50, 0.80, 0.85]}   # 蟹排出现，旁边的薯塔不动
