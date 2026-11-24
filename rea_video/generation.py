@@ -29,13 +29,14 @@ import yaml
 from .readings import shot_description
 from . import performance
 from .classify import LABEL_ZH
-from .i18n import T, join, lang, model_name, semi, shot_ids
+from .i18n import T, join, lang, model_name, semi, shot_ids, using
 from .plan import framing_words, shot_prompts, with_acting
 
 REF_CLIP_S = 15.0  # one reference video: Seedance / Kling take clips up to about 15 s each
 SHORT_UNIT_S = 3.0  # a call this short on its own is unstable and wasteful
 CALLS_PER_MIN = 12  # more calls than this per generated minute: the plan is cutting too finely
 UNKNOWN_IMAGES = 4  # a model that takes reference images without a stated limit is planned for this many
+REMIX_MIN_REF_S = 5.0  # reference video shorter than this per call is a motion / look reference, too short to carry a stretch of shots
 
 GEN_LABELS = ("ai_video", "cg_3d", "anim_2d")
 # generate = all: filmed and clipped shots are generated too (the user swaps people / products and remakes it by model);
@@ -110,6 +111,7 @@ def spec_of(model: dict | None) -> dict:
     multi_ref = "video.multi_reference" in prim
     plan = m.get("planning") or {}
     return {"max": float(d.get("max") or 10), "min": float(d.get("min") or 0),
+            "steps": [float(x) for x in d.get("steps") or []], "steps_with_refs": [float(x) for x in lim.get("duration_with_refs_s") or []],
             "multi_shot": "video.multi_shot" in prim, "shots": int(lim.get("shots_per_generation") or 0) or None,
             "ref_video": "video.reference_video" in prim, "ref_videos": int(refs.get("video") or 1),
             "ref_total": float(rv) if rv else REF_CLIP_S * max(1, int(refs.get("video") or 1)),
@@ -119,13 +121,23 @@ def spec_of(model: dict | None) -> dict:
             "exclusive": bool(lim.get("exclusive_inputs")), "native_audio": bool((m.get("audio") or {}).get("native"))}
 
 
+def call_seconds(spec: dict, secs: float, refs: bool = False) -> int:
+    """The length one call asks for: the model's allowed lengths when it only takes some (Veo: 4 / 6 / 8 s, 8 s with
+    reference images), else whole seconds within its range; the clip is trimmed to `secs` afterwards."""
+    steps = (spec.get("steps_with_refs") if refs else None) or spec.get("steps") or []
+    if steps:
+        return int(next((x for x in sorted(steps) if x >= secs - 0.05), max(steps)))
+    lo, hi = int(spec.get("min") or 1), int(spec.get("max") or 15)
+    return int(min(hi, max(lo, -(-round(secs, 2) // 1))))
+
+
 def planned_images(spec: dict) -> int:
     """Images a plan uses per call: the model's limit, or the narrower default its capability entry sets."""
     return min(spec["images"], spec.get("plan_images") or spec["images"])
 
 
 def choose_strategy(spec: dict, n_own: int) -> str:
-    if spec["ref_video"] and spec.get("prefer") in (None, "remix"):
+    if spec["ref_video"] and spec.get("prefer") in (None, "remix") and spec["ref_total"] >= REMIX_MIN_REF_S:
         return "remix"
     if spec["multi_shot"] and spec["multi_ref"] and planned_images(spec) >= n_own + 2:
         return "keyframes"
@@ -224,39 +236,77 @@ def _brief(seg: list[dict], keyframe_tag: dict[int, str]) -> list[dict]:
                     "duration": round(r["duration"], 3), "label": r["base"]["label"],
                     "source": shot_description(r),
                     "action": with_acting(_shot_text(r), act, en=lang() == "en"), "framing": framing_words(r)[0],
+                    "action_en": with_acting(shot_prompts(r).get("video_prompt_en") or "", act, en=True), "framing_en": framing_words(r)[1],
                     "composition": keyframe_tag.get(r["index"]), **({"acting": performance.summary(act)} if act else {})})
         acc += r["duration"]
     return out
 
 
-def _draft(strategy: str, refs: list[dict], brief: list[dict], swaps_txt: list[str], style: str) -> str:
-    """A generic prompt from the brief: what to keep, what changes, shot by shot. The final one is written per model."""
-    vids = "".join(dict.fromkeys(r["tag"] for r in refs if r["tag"].startswith("@视频")))
-    head = []
-    if strategy == "remix":
-        head.append(T("{v} 是原片：照它的分镜生成，镜头数、每个镜头的时长、景别、机位、运镜、动作和剪辑节奏都跟它一致，只把画面内容换成下面写的",
-                      "{v} is the source: follow its shots (count, length, size, camera, movement, action and cutting rhythm) and change only what is written below", v=vids))
-    elif strategy == "keyframes":
-        head.append(T("按下面的镜头顺序一次生成，镜头之间硬切；每个镜头的构图、景别和机位参考对应的原片画面图",
-                      "Generate the shots below in order in one go, hard cuts between them; each shot takes composition, size and camera from its source frame image"))
-    head += swaps_txt
-    if style:
-        head.append(style)
-    head.append(T("画面里不要出现字幕、文字和水印", "No subtitles, captions or watermarks in the picture"))
-    lines = []
-    for i, x in enumerate(brief, 1):
-        text = x["action"] or T("（缺镜头描述：先看图复核补写）", "(no description: write one in the image review)")
-        if strategy == "keyframes" and not x.get("composition") and x.get("framing"):
-            text = x["framing"] + T("。", ". ") + text
-        if x.get("composition"):
-            text += T("（构图参考 {k}）", " (composition: {k})", k=x["composition"])
-        if len(brief) == 1:
-            lines.append(text)
-        elif strategy == "remix":
-            lines.append(T("镜头{i}：{t}", "Shot {i}: {t}", i=i, t=text))
-        else:
-            lines.append(T("镜头{i}（从 {a:.1f} 秒起）：{t}", "Shot {i} (from {a:.1f}s): {t}", i=i, a=x["at"], t=text))
-    return T("。", ". ").join(h.rstrip("。.") for h in head) + T("。\n", ".\n") + "\n".join(lines)
+REF_TAG = re.compile(r"@(图片|视频)(\d+)")
+
+
+def _swap_line(sw: dict) -> str:
+    # the words describe what the shot shows, not an edit: Seedance-style models read 换成 / 替换 / 改成 as an edit task
+    f = sw.get("from") or T("主体", "subject")
+    t = sw.get("to") or sw.get("tag") or T("用户给的主体", "the user's subject")
+    return (T("原片里{f}的位置，这次是{t}", "where the source has {f}, this video has {t}", f=f, t=t)
+            + (T("（参考 {k}）", " (see {k})", k=sw["tag"]) if sw.get("tag") else ""))
+
+
+def _draft(strategy: str, refs: list[dict], brief: list[dict], swaps: list[dict], style, fmt: dict | None = None) -> str:
+    """A prompt from the brief: what to keep, what changes, shot by shot. `fmt` (the model's `draft` block in
+    prompting.yaml) sets the prompt language, the shot lines, how images / videos are named and the fixed fields, so the
+    draft is already in the model's own shape; the agent still checks it against the model's notes."""
+    raw = fmt or {}
+    dl = raw.get("lang") or lang()
+    with using(dl):
+        # any field may be split by language ({zh: …, en: …}); a field missing for this language falls back to the generic shape
+        fmt = {k: (v.get(lang()) if isinstance(v, dict) else v) for k, v in raw.items()}
+        en = lang() == "en"
+        vids = T("、", ", ").join(dict.fromkeys(r["tag"] for r in refs if r["tag"].startswith("@视频")))
+        head = []
+        if strategy == "remix":
+            head.append(T("{v} 是原片：照它的分镜生成，镜头数、每个镜头的时长、景别、机位、运镜、动作和剪辑节奏都跟它一致，画面内容照下面写",
+                          "{v} is the source: follow its shots (count, length, size, camera, movement, action and cutting rhythm); the picture is as written below", v=vids))
+        elif strategy == "keyframes":
+            head.append(T("按下面的镜头顺序一次生成，镜头之间硬切；每个镜头的构图、景别和机位参考对应的原片画面图",
+                          "Generate the shots below in order in one go, hard cuts between them; each shot takes composition, size and camera from its source frame image"))
+        head += [_swap_line(sw) for sw in swaps]
+        st = style.get(lang(), "") if isinstance(style, dict) else style
+        if st:
+            head.append(st)
+        if fmt.get("negatives_line", True):
+            head.append(T("画面里不要出现字幕、文字和水印", "No subtitles, captions or watermarks in the picture"))
+        lines = []
+        for i, x in enumerate(brief, 1):
+            text = (x.get("action_en") if en and x.get("action_en") else x["action"]) \
+                or T("（缺镜头描述：先看图复核补写）", "(no description: write one in the image review)")
+            framing = x.get("framing_en") if en else x.get("framing")
+            if strategy == "keyframes" and not x.get("composition") and framing:
+                text = framing + T("。", ". ") + text
+            if x.get("composition"):
+                text += T("（构图参考 {k}）", " (composition: {k})", k=x["composition"])
+            a, z = x["at"], x["at"] + x["duration"]
+            keys = {"i": i, "text": text, "a": _mmss(a), "z": _mmss(z), "at": _mmss(a, ms=True),
+                    "s0": int(round(a)), "s1": max(int(round(z)), int(round(a)) + 1), "d": max(1, int(round(x["duration"])))}
+            if fmt.get("shot"):
+                lines.append((fmt.get("first_shot") if i == 1 and fmt.get("first_shot") else fmt["shot"]).format(**keys))
+            elif len(brief) == 1:
+                lines.append(text)
+            elif strategy == "remix":
+                lines.append(T("镜头{i}：{t}", "Shot {i}: {t}", i=i, t=text))
+            else:
+                lines.append(T("镜头{i}（从 {a:.1f} 秒起）：{t}", "Shot {i} (from {a:.1f}s): {t}", i=i, a=a, t=text))
+        sep = T("。", ". ")
+        out = fmt.get("head", "") + sep.join(h.rstrip("。.") for h in head) + sep.rstrip() + "\n" + "\n".join(lines)
+        if fmt.get("tail"):
+            out += "\n" + "\n".join(fmt["tail"])
+    tags = {"图片": fmt.get("image_tag"), "视频": fmt.get("video_tag")}
+    return REF_TAG.sub(lambda m: tags[m.group(1)].format(n=m.group(2)) if tags[m.group(1)] else m.group(0), out)
+
+
+def _mmss(t: float, ms: bool = False) -> str:
+    return f"{int(t // 60):02d}:{t % 60:06.3f}" if ms else f"{int(t // 60):02d}:{int(round(t)) % 60:02d}"
 
 
 def _inputs(strategy: str, refs: list[dict], seg: list[dict], spec: dict) -> list[dict]:
@@ -287,8 +337,8 @@ def _inputs(strategy: str, refs: list[dict], seg: list[dict], spec: dict) -> lis
     return out
 
 
-def build_unit(seg: list[dict], k: int, strategy: str, spec: dict, own: list[dict], swaps_txt: list[str], style: str,
-               model: dict | None) -> dict:
+def build_unit(seg: list[dict], k: int, strategy: str, spec: dict, own: list[dict], swaps: list[dict], style,
+               model: dict | None, fmt: dict | None = None) -> dict:
     t0, t1 = seg[0]["start"], seg[-1]["end"]
     dur = round(sum(r["duration"] for r in seg), 3)
     ranges = _ranges(seg)
@@ -299,8 +349,7 @@ def build_unit(seg: list[dict], k: int, strategy: str, spec: dict, own: list[dic
     parts = int(-(-dur // spec["max"])) if len(seg) == 1 and dur > spec["max"] + 1e-6 else 1
     refs = [dict(r) for r in own] if strategy != "frames" or not spec["exclusive"] else []
     kept_tags = {r["tag"] for r in refs}
-    unit_swaps = [re.sub(r"（参考 @图片\d+）| \(see @图片\d+\)", "", t) if not any(k in t for k in kept_tags) else t
-                  for t in swaps_txt]
+    unit_swaps = [sw if sw.get("tag") in kept_tags else {**sw, "tag": None} for sw in swaps]
     keyframe_tag: dict[int, str] = {}
     if strategy == "remix":
         each = min(REF_CLIP_S, spec["ref_total"])
@@ -324,11 +373,12 @@ def build_unit(seg: list[dict], k: int, strategy: str, spec: dict, own: list[dic
             refs.append({"tag": tag, "keyframe": r["index"], "t": round(r["start"] + min(0.3, r["duration"] / 2), 3),
                          "what": T("原片镜头 #{i} 的画面（擦掉字幕）：只参考构图、景别和机位", "source shot #{i} (subtitles erased): composition, size and camera only", i=r["index"])})
     brief = _brief(seg, keyframe_tag)
+    call_s = call_seconds(spec, dur / parts, refs=bool(refs))
     unit = {"id": f"G{k}", "kind": "generate", "strategy": strategy, "label": label, "label_zh": LABEL_ZH[label],
             "shots": [r["index"] for r in seg], "start": round(t0, 3), "end": round(t1, 3), "duration": dur, "ranges": ranges,
             "mode": "multi_shot" if len(seg) > 1 else ("split" if parts > 1 else "single"), "calls": parts,
-            "generate_s": round(dur / parts, 3), "model": (model or {}).get("id"), "model_name": model_name((model or {}).get("name")),
-            "refs": refs, "brief": brief, "draft": _draft(strategy, refs, brief, unit_swaps, style),
+            "generate_s": round(dur / parts, 3), "call_s": call_s, "model": (model or {}).get("id"), "model_name": model_name((model or {}).get("name")),
+            "refs": refs, "brief": brief, "draft": _draft(strategy, refs, brief, unit_swaps, style, fmt), "draft_format": bool(fmt),
             "inputs": _inputs(strategy, refs, seg, spec)}
     unframed = [x["shot"] for x in brief if strategy == "keyframes" and not x.get("composition")]
     missing = [x["shot"] for x in brief if not x["action"]]
@@ -361,13 +411,14 @@ def part_starts(b: dict) -> set[int]:
     return out
 
 
-def plan_generation(b: dict, model: dict | None, intent: dict, new_scene: set[int], style: str, skip: set[int]) -> dict:
+def plan_generation(b: dict, model: dict | None, intent: dict, new_scene: set[int], style, skip: set[int],
+                    notes: dict | None = None) -> dict:
     """Generation units and the facts they were planned on. `skip`: shots made another way (motion drive, a clip
     reused from another unit)."""
     spec = spec_of(model)
     labels = ALL_GEN_LABELS if intent.get("generate") == "all" else GEN_LABELS
     own = []
-    swaps_txt = []
+    swaps = []
     for s in intent.get("swaps") or []:
         tag = None
         if s.get("image"):
@@ -375,8 +426,7 @@ def plan_generation(b: dict, model: dict | None, intent: dict, new_scene: set[in
             own.append({"tag": tag, "user": True, "path": s["image"],
                         "what": (s["to"] or T("用户给的参考图", "the user's reference image")) + (T("（替换原片的{f}）", " (replaces the source's {f})", f=s["from"]) if s["from"] else "")})
         if s["from"] or s["to"]:
-            swaps_txt.append(T("原片的{f}换成{t}", "the source's {f} becomes {t}", f=s["from"] or T("主体", "subject"), t=s["to"] or tag)
-                             + (T("（参考 {k}）", " (see {k})", k=tag) if tag else ""))
+            swaps.append({"from": s["from"], "to": s["to"], "tag": tag})
     strategy = choose_strategy(spec, len(own))
     if strategy == "remix":
         max_s, max_shots = min(spec["max"], spec["ref_total"]), spec["shots"]
@@ -393,7 +443,7 @@ def plan_generation(b: dict, model: dict | None, intent: dict, new_scene: set[in
     new_part = part_starts(b)
     for run in runs(b["shots"], labels, skip, joinable_inserts=strategy in ("remix", "keyframes", "text")):
         for seg in pack(run, max_s, max_shots, new_scene, new_part):
-            units.append(build_unit(seg, len(units) + 1, strategy, spec, own, swaps_txt, style, model))
+            units.append(build_unit(seg, len(units) + 1, strategy, spec, own, swaps, style, model, (notes or {}).get("draft")))
     return {"strategy": strategy, "spec": spec, "labels": list(labels), "units": units, "own_refs": own,
             "rules": {"max_s": max_s, "max_shots": max_shots, "generate": intent.get("generate", "ai")}}
 
@@ -404,10 +454,16 @@ VIDEO_TAG_RES = (r"@视频(\d+)", r"<Video (\d+)>", r"\bVideo (\d+)\b")
 
 
 def lint_prompt(text: str, n_images: int, n_videos: int, notes: dict | None) -> list[str]:
-    """What breaks the model's own format: image / video numbers past what is sent, length, required and forbidden
-    parts (from the model's `lint` notes in the capability map)."""
+    """The errors of `lint`."""
+    return [m for lv, m in lint(text, n_images, n_videos, notes) if lv == "error"]
+
+
+def lint(text: str, n_images: int, n_videos: int, notes: dict | None) -> list[tuple[str, str]]:
+    """What breaks the model's own format, as (level, message): image / video numbers past what is sent, length,
+    required and forbidden parts (from the model's `lint` notes in the capability map). A forbid rule may carry
+    `when: refs` (only when reference images or videos are sent) and `level: warn` (a risk, not a format error)."""
     rules = (notes or {}).get("lint") or {}
-    errs = []
+    errs: list = []
     imgs = [int(x) for p in TAG_RES for x in re.findall(p, text)]
     vids = [int(x) for p in VIDEO_TAG_RES for x in re.findall(p, text)]
     if imgs and max(imgs) > n_images:
@@ -422,15 +478,20 @@ def lint_prompt(text: str, n_images: int, n_videos: int, notes: dict | None) -> 
     for need in rules.get("require") or []:
         if need not in text:
             errs.append(T("缺少「{x}」", "missing “{x}”", x=need))
+    warns = []
     for f in rules.get("forbid") or []:
-        if isinstance(f, dict) and f.get("re") and re.search(f["re"], text):
-            errs.append(str(f.get("why") or f["re"]))
+        if not isinstance(f, dict) or not f.get("re") or (f.get("when") == "refs" and not (n_images or n_videos)):
+            continue
+        hit = re.search(f["re"], text)
+        if hit:
+            msg = str(f.get("why") or f["re"]) + T("（「{w}」）", " (“{w}”)", w=hit.group(0))
+            (warns if f.get("level") == "warn" else errs).append(msg)
     if rules.get("language") == "en":
         body = re.sub(r"<d>.*?</d>|\"[^\"]*\"", "", text, flags=re.S)  # dialogue and on-screen text keep their own language
         cjk = len(re.findall(r"[㐀-鿿]", body))
         if cjk > 0.05 * max(1, len(body)):
             errs.append(T("这个模型的提示词要用英文（台词和画面文字除外）", "this model's prompts should be in English (dialogue and on-screen text aside)"))
-    return errs
+    return [("error", e) for e in errs] + [("warn", w) for w in warns]
 
 
 SHOT_RES = (r"\[Shot (\d+)\]", r"镜头\s*(\d+)", r"\bShot (\d+)\b")
@@ -512,11 +573,15 @@ def checks(plan: dict, intent: dict, prompts: dict[str, str], notes: dict | None
                           u=u["id"], f="|".join(stale_frames)), u["id"])
         final = prompts.get(u["id"])
         if not final:
-            add("warn", T("{u} 还是通用草稿：按 {m} 的写法写好最终提示词，放进 remake/prompts.json", "{u} still has the generic draft: write the final prompt in {m}'s format into remake/prompts.json",
-                          u=u["id"], m=u.get("model_name") or u.get("model") or "?"), u["id"])
-        else:
-            for e in lint_prompt(final, n_img, n_vid, notes):
-                add("error", f"{u['id']}: {e}", u["id"])
+            m = u.get("model_name") or u.get("model") or "?"
+            add("warn", T("{u} 还是工具草稿（已按 {m} 的格式排好）：对照它的写法核对、改好后放进 remake/prompts.json",
+                          "{u} still has the tool's draft (already in {m}'s layout): check it against the model's notes and put the final into remake/prompts.json", u=u["id"], m=m)
+                if u.get("draft_format") else
+                T("{u} 还是通用草稿：按 {m} 的写法写好最终提示词，放进 remake/prompts.json", "{u} still has the generic draft: write the final prompt in {m}'s format into remake/prompts.json", u=u["id"], m=m), u["id"])
+        for lv, e in lint(final or u.get("draft") or "", n_img, n_vid, notes):
+            if final or lv == "warn":  # a draft is the tool's own wording: only its risks are worth a line
+                add(lv, f"{u['id']}: {e}", u["id"])
+        if final:
             n = shots_written(final)
             if n and len(u["shots"]) > 1 and n != len(u["shots"]):  # written for another split of the shots
                 add("error", T("{u} 的最终提示词写了 {n} 个镜头，单元里有 {m} 个：按现在的单元重写", "{u}'s final prompt numbers {n} shots but the unit has {m}: rewrite it for the current unit",
@@ -557,8 +622,10 @@ def report_md(plan: dict, prompts: dict[str, str]) -> list[str]:
     st = plan.get("strategy")
     how = {"remix": T("这段原片擦掉字幕后当参考视频，模型照它的分镜、运镜和节奏出完这段的镜头",
                       "the source stretch, subtitles erased, is the reference video; the model follows its shots, camera and pacing"),
-           "keyframes": T("这个模型不吃参考视频，每个镜头给一张擦掉字幕的原片画面定构图，换进去的东西各给参考图",
-                          "the model takes no reference video: one source frame per shot (subtitles erased) fixes composition, swapped-in things get their own images"),
+           "keyframes": (T("这个模型也能吃参考视频，这里按它的默认排法：", "the model also takes reference video, but its default plan is used here: ")
+                         if spec.get("ref_video") else T("这个模型不吃参考视频，", "the model takes no reference video: "))
+                        + T("每个镜头给一张擦掉字幕的原片画面定构图，换进去的东西各给参考图",
+                            "one source frame per shot (subtitles erased) fixes composition, swapped-in things get their own images"),
            "frames": T("一次只出一个镜头，从原片首帧（和尾帧）起步", "one shot per call, from the source's first (and last) frame"),
            "text": T("只有文字提示词", "prompt only")}[st]
     notes_md = [T("- 分组：连着的镜头尽量放进同一次生成，单次 ≤{s:.0f} 秒", "- Grouping: consecutive shots share a call where they fit, ≤{s:.0f}s per call", s=rules.get("max_s") or 0)
@@ -570,11 +637,11 @@ def report_md(plan: dict, prompts: dict[str, str]) -> list[str]:
     if plan.get("overlay_note"):
         notes_md.append(T("- 包装层：{a}", "- Packaging: {a}", a=plan["overlay_note"]))
     L = [T("| 段 | 镜头 | 时间 | 时长 | 要准备 |", "| Part | Shots | Time | Length | Prepare |"), "|---|---|---|---|---|"]
-    shortest = float(spec.get("min") or 0)
     for u in units:
         when = join(f"{a:.1f}–{z:.1f}s" for a, z in u["ranges"])
-        length = (T("生成 {m:.0f}s，剪到 {d:.1f}s", "generate {m:.0f}s, trim to {d:.1f}s", m=shortest, d=u["duration"])
-                  if u["generate_s"] < shortest else f"{u['duration']:.1f}s")
+        call = u.get("call_s") or u["generate_s"]
+        length = (T("生成 {m:.0f}s，剪到 {d:.1f}s", "generate {m:.0f}s, trim to {d:.1f}s", m=call, d=u["generate_s"])
+                  if call - u["generate_s"] >= 0.5 else f"{u['duration']:.1f}s")
         L.append(f"| {u['id']} | {shot_ids(u['shots'])} | {when} | {length}"
                  f"{T('（{c} 次）', ' ({c} calls)', c=u['calls']) if u['calls'] > 1 else ''} | {_fed(u) or '—'} |")
     L += ["", '<details class="ref"><summary>' + T("这样分段的原因", "Why it is split this way") + "</summary>", ""] + notes_md + ["", "</details>"]
@@ -591,6 +658,8 @@ def report_md(plan: dict, prompts: dict[str, str]) -> list[str]:
                        s=a["shot"], k=T("（看点）", " (key)") if a["key"] else "", l=a["line"], h=a["how"]))
         final = prompts.get(u["id"])
         L += ["", T("提示词：", "Prompt:") if final
+              else T("提示词草稿（已按 {m} 的格式排好，生成前核对后写进 remake/prompts.json）：", "Draft prompt (in {m}'s layout; check it and put the final into remake/prompts.json before generating):",
+                     m=u.get("model_name") or u.get("model")) if u.get("draft_format")
               else T("提示词草稿（通用写法，生成前按 {m} 的写法改写进 remake/prompts.json）：", "Draft prompt (generic; rewrite it in {m}'s format into remake/prompts.json before generating):",
                      m=u.get("model_name") or u.get("model")),
               "", "```text", final or u["draft"], "```", "", "</details>"]

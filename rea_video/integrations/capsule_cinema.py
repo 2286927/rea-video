@@ -321,7 +321,7 @@ def _unit_jobs(b: dict, bdir: Path, run_dir: Path, plan: dict, prompts: dict[str
             gtype = GEN_TYPE[u["strategy"]]
             params = {"prompt": prompt, "output_dir": str(run_dir / (u["id"] if len(parts) == 1 else f"{u['id']}-{part}")),
                       "generation_type": gtype, "engine": eng, "aspect_ratio": b["source"].get("aspect_ratio") or "9:16",
-                      "duration": int(min(hi, max(lo, round(secs + 0.49))))}
+                      "duration": int(u.get("call_s") or min(hi, max(lo, round(secs + 0.49))))}
             if vids:
                 params["video_paths"] = vids
             if images:

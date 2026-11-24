@@ -61,6 +61,8 @@ models:
       - https://runway.com/resources/seedance-2-5-prompt-guide
     lint:
       max_cjk: 500
+      forbid:
+        - {re: '编辑视频|增加|加上|删除|去掉|修改|替换|改成|换成|延长|延续|续写', when: refs, level: warn, why: 带参考素材时这些词会让请求被当成编辑或续写任务：换个说法，或把 omni_reference_task_type 设成 reference}
 
   seedance-2.5-flash:
     basis: vendor
@@ -112,6 +114,7 @@ models:
 
   kling-4.0:
     basis: vendor
+    draft: {shot: {zh: "镜头{i}（{d}秒）：{text}", en: "Shot {i} ({d}s): {text}"}, image_tag: "@Image{n}", video_tag: "@Video{n}"}
     structure: >-
       四块：[Asset Roles] 每个素材管什么 → [Overall Settings] 整体设定 → [Sequence of Events] 按时间写事件，再写运镜 → [Audio] 声音。先用一句话写清主体、场景、动作、情绪，再只补运镜、时间、声音和要保持不变的东西
     language: 没有指定提示词语言；台词和画面文字支持中、英、日、韩、西、葡、德、法、印地语，中文方言和英语口音
@@ -157,6 +160,7 @@ models:
 
   kling-3.0:
     basis: third-party
+    lint: {max_chars: 2500}
     structure: 没有固定公式；按 主体、动作、场景、运镜、光线、情绪 来写，示例顺序是 场景 → 主体 → 运镜 → 动作 → 台词
     language: 中文、英文都可以；台词支持中、英、日、韩、西和方言口音
     length: 整体 2500 字符以内；自定义分镜每个镜头 512 字符以内，超出被截断
@@ -184,6 +188,7 @@ models:
 
   kling-o3:
     basis: vendor
+    lint: {max_chars: 2500}
     structure: >-
       参考生成：[主体的细节描述] + [主体之间的互动 / 动作] + [环境或背景] + [光线、风格等视觉方向]
     language: 中文、英文都可以
@@ -209,6 +214,8 @@ models:
 
   veo-3.1:
     basis: vendor
+    draft: {lang: en, shot: "[{a}-{z}] {text}", image_tag: "image {n}", negatives_line: false}
+    lint: {language: en}
     structure: >-
       [Cinematography 镜头] + [Subject 主体] + [Action 动作] + [Context 环境] + [Style & Ambiance 风格氛围]；短片一条提示词只写一个集中的瞬间
     language: 提示词用英文
@@ -253,6 +260,8 @@ models:
 
   gemini-omni-flash:
     basis: vendor
+    draft: {lang: en, shot: "[{s0}-{s1}s] {text}", image_tag: "reference image {n}", video_tag: "reference video {n}"}
+    lint: {language: en}
     structure: 没有公式，自然语言写清场景、运镜、光线、氛围
     language: 英文（其他语言官方未评估）
     length: 官方没给上限
@@ -345,6 +354,15 @@ models:
 
   minimax-h3:
     basis: vendor
+    draft:
+      lang: en
+      head: "integrated_multimodal_description: "
+      first_shot: "[Shot 1] {text}"
+      shot: "[Shot {i}] At {at}, the camera cuts to: {text}"
+      image_tag: "<Picture {n}>"
+      video_tag: "<Video {n}>"
+      negatives_line: false
+      tail: ["overall_soundscape: Only the natural sounds of the actions on screen.", "non_diegetic_music: N/A"]
     structure: >-
       分字段写：integrated_multimodal_description:（画面和动作）→ overall_soundscape:（环境声和音效，1–4 句）→ non_diegetic_music:（配乐的乐器和速度，1–3 句，没有写 N/A）。两个声音字段不要留空，留空容易出多余的人声
     language: 提示词用英文；台词和画面文字保留原语言
@@ -379,6 +397,15 @@ models:
 
   minimax-h3-max:
     basis: vendor
+    draft:
+      lang: en
+      head: "integrated_multimodal_description: "
+      first_shot: "[Shot 1] {text}"
+      shot: "[Shot {i}] At {at}, the camera cuts to: {text}"
+      image_tag: "<Picture {n}>"
+      video_tag: "<Video {n}>"
+      negatives_line: false
+      tail: ["overall_soundscape: Only the natural sounds of the actions on screen.", "non_diegetic_music: N/A"]
     structure: >-
       和 MiniMax H3 同一套写法（rea-video models minimax-h3）
     length: >-
@@ -407,6 +434,8 @@ models:
 
   pika-h3-flex:
     basis: vendor
+    draft: {lang: en, first_shot: "[Shot 1] {text}", shot: "[Shot {i}] at {a}: {text}", image_tag: "@Image{n}", video_tag: "@Video{n}"}
+    lint: {language: en, max_chars: 8000}
     structure: >-
       按播放顺序写：画面和场景 → 谁在哪 → 每个动作以及它怎么结束
     language: >-
@@ -445,6 +474,7 @@ models:
 
   hailuo-2.3:
     basis: vendor
+    lint: {max_chars: 2000}
     structure: 官方没有公式；常用顺序是 景别 / 运镜 → 主体 → 动作 → 场景 / 光线，一段 6 秒只写一个动作节拍
     language: 没有说明
     length: 2000 字符以内
@@ -466,6 +496,13 @@ models:
 
   wan-3.0:
     basis: vendor
+    draft:
+      shot: {zh: "第{i}个镜头[{s0}-{s1}秒]{text}"}
+      image_tag: {zh: "图{n}", en: "Image {n}"}
+      video_tag: {zh: "视频{n}", en: "Video {n}"}
+      negatives_line: false
+      tail: {zh: ["负向清单：字幕、文字、水印"], en: ["Negative list: subtitles, captions, watermarks"]}
+    lint: {max_chars: 20000}
     structure: >-
       [总体描述] + [参考素材引用：图 N / 视频 N / 音频 N] + [分镜 N（起-止秒）：主体 + 场景 + 运动 + 美学控制] + [台词：xx 说："xxxx"] + [音效 / BGM] + [风格 / 情绪] + [负向清单]，写不到的板块直接跳过
     language: 中文、英文
@@ -493,6 +530,7 @@ models:
 
   wan-2.7-edit:
     basis: vendor
+    lint: {max_chars: 5000}
     structure: 编辑指令：说清改什么、改成什么，其余保持不变；一次改一项
     language: 中文、英文
     length: 5000 字符以内；negative_prompt 500 字符以内
@@ -529,6 +567,8 @@ models:
 
   ltx-2.5:
     basis: vendor
+    draft: {lang: en}
+    lint: {language: en}
     structure: >-
       一整段英文，按时间顺序、现在时：主要动作 → 细节动作 → 外观 → 环境 → 运镜 → 光线 → 变化。不用 "Audio:" "Visual:" 这类标签；景别、运镜、视角写进句子里，不要写成 "medium shot, static camera —" 这样的前缀；不写推测出来的情绪，写看得见的动作
     language: 英文；台词保留原语言，原样放在引号里
@@ -606,6 +646,7 @@ models:
 
   runway-gen-4.5:
     basis: vendor
+    lint: {max_chars: 1000}
     structure: >-
       文生视频："[Camera] shot of [subject] [action] in [environment]. [补充描述]"；图生视频："The camera [运镜] as the subject [动作]. [补充描述]"。不认 JSON 格式
     language: 什么语言都收，英文最稳
@@ -637,6 +678,8 @@ models:
 
   luma-ray3.2:
     basis: vendor
+    draft: {lang: en}
+    lint: {language: en, max_chars: 6000}
     structure: 运镜放最前，再写场景、发生什么、光线和风格；加一个速度词（slowly、smoothly）。动词用进行中的动作（running，不用 begins to run），现在时
     language: 英文
     length: 100 个词左右（上限 6000 字符）

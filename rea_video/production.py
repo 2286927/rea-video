@@ -233,6 +233,21 @@ def reused_footage(gen: list[dict]) -> dict[int, int]:
     return out
 
 
+def _light_word(r: dict, key: str) -> str | None:
+    """One lighting reading in the current language: the stored words are in the language the video was broken down
+    in, so an English prompt inside a Chinese report reads them again from the measurements."""
+    from .aspects import lighting
+
+    li = (r.get("aspects") or {}).get("lighting") or {}
+    v = (li.get("result") or {}).get(key)
+    if not v or lang() != "en" or not re.search(r"[㐀-鿿]", v):
+        return v
+    if key == "setup_name":
+        row = next((s for s in lighting.SETUPS if s["key"] == (li.get("result") or {}).get("setup")), None)
+        return (row or {}).get("name_en")
+    return lighting.words(li.get("measured") or {}).get(key)
+
+
 def _style_line(shots: list[dict], aspect_ratio: str) -> str:
     """One style sentence for every unit (most common lighting reading across the generated shots, by duration),
     so separately generated units still look like one video."""
@@ -243,11 +258,17 @@ def _style_line(shots: list[dict], aspect_ratio: str) -> str:
     for key in ("setup_name", "quality", "color_temp", "depth"):
         votes: dict[str, float] = {}
         for r in shots:
-            v = (((r.get("aspects") or {}).get("lighting") or {}).get("result") or {}).get(key)
+            v = _light_word(r, key)
             if v:
                 votes[v] = votes.get(v, 0.0) + r["duration"]
         if votes:
-            picks.append(max(votes.items(), key=lambda kv: kv[1])[0])
+            # the bracketed explanations are for people reading the report, not for the model
+            v = re.sub(r"\s*[（(][^）)]*[）)]", "", max(votes.items(), key=lambda kv: kv[1])[0]).strip()
+            if key == "color_temp" and re.fullmatch(r"[a-z]+", v):
+                v += " tones"  # "cool" alone is vague in an English prompt
+            words = set(re.findall(r"[a-z]+", v.lower()))
+            if v and not any(v in p or (words and words <= set(re.findall(r"[a-z]+", p.lower()))) for p in picks):
+                picks.append(v)
     if picks:
         bits.append(T("，", ", ").join(picks))
     return semi().join(bits)
@@ -349,12 +370,18 @@ def production_plan(b: dict, out: Path, engine: str = "minimax-h3") -> dict:
     new_scene = {r["index"] for r in shots if not same_prev.get(r["index"], False)}
     eng, model = pick_model(planner, intent.get("model") or engine)
     gen = [r for r in shots if r["base"]["label"] in gen_labels]
-    style = _style_line(gen, b["source"].get("aspect_ratio", "")) if gen else ""
+    from .i18n import using
+
+    style = {}  # the prompt drafts are in the model's prompt language, which may differ from the report's
+    for lg in ("zh", "en"):
+        with using(lg):
+            style[lg] = _style_line(gen, b["source"].get("aspect_ratio", "")) if gen else ""
     reused = reused_footage(gen)
     from . import dance
 
     motion = dance.motion_indices(b)  # the moves are the point: driven from the source motion, not generated from frames
-    g = gen_mod.plan_generation(b, model, intent, new_scene, style, set(reused) | motion)
+    g = gen_mod.plan_generation(b, model, intent, new_scene, style, set(reused) | motion,
+                                notes=planner.prompting.get((model or {}).get("id")))
     units = g["units"]
     for again, src in sorted(reused.items()):
         u = next((u for u in units if src in u["shots"]), None)

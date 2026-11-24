@@ -227,7 +227,8 @@ models:
     access: [app, api]
     primitives: [video.t2v, video.i2v_first_frame, video.i2v_first_last, video.multi_reference, video.multi_shot, video.extend, video.native_audio]
     limits:
-      duration_s: {min: 4, max: 8}
+      duration_s: {min: 4, max: 8, steps: [4, 6, 8]}
+      duration_with_refs_s: [8]
       resolutions: [720p, 1080p, 4K]
       refs: {image: 4}
     audio: {native: true}

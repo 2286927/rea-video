@@ -11,6 +11,7 @@ The language is set once per run (`set_lang`), from `--lang` / prefs, and stored
 """
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import re
 from collections.abc import Mapping
@@ -42,6 +43,16 @@ def set_lang(lang: str | None) -> str:
 
 def lang() -> str:
     return _lang.get()
+
+
+@contextlib.contextmanager
+def using(lang: str | None) -> Iterator[None]:
+    """Render a block in another language (a prompt for a model that wants English inside a Chinese report)."""
+    tok = _lang.set(_norm_lang(lang) or _lang.get())
+    try:
+        yield
+    finally:
+        _lang.reset(tok)
 
 
 def T(zh: str, en: str | None = None, **kw) -> str:

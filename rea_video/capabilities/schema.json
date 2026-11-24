@@ -26,6 +26,7 @@
           "properties": {"image": {"type": "integer"}, "video": {"type": "integer"}, "audio": {"type": "integer"}, "total": {"type": "integer"}}
         },
         "ref_video_s": {"$ref": "#/$defs/range", "description": "Total length of the reference videos one request accepts"},
+        "duration_with_refs_s": {"type": "array", "items": {"type": "number"}, "description": "The only lengths a call takes when reference images or videos are sent"},
         "keyframes": {"type": "integer"},
         "shots_per_generation": {"type": "integer"},
         "prompt_tokens": {"type": "integer"},
@@ -67,7 +68,8 @@
   "$defs": {
     "range": {
       "type": "object", "additionalProperties": false,
-      "properties": {"min": {"type": "number"}, "max": {"type": "number"}}
+      "properties": {"min": {"type": "number"}, "max": {"type": "number"},
+                     "steps": {"type": "array", "items": {"type": "number"}, "description": "The only lengths a call takes, when the model does not take any length in its range"}}
     }
   }
 }
