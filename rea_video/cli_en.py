@@ -13,7 +13,7 @@ HELP = {
     "": "Reverse-engineer a video shot by shot: live action / AI-generated / code-rendered / mixed, with a remake plan",
     "verbose": "print debug logs and full tracebacks on error",
     "env_file": "extra .env file (for example capsule-cinema/.env, for VLM settings)",
-    "lang": "CLI and output language: zh (default) / en",
+    "root_lang": "language of CLI help and messages: zh (default) / en; with decompose or apply-review it also sets the report language",
 
     "decompose": "break down a video",
     "decompose.video": "input video file",

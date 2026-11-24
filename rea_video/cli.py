@@ -886,7 +886,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="rea-video", description="逆向拆解视频：逐镜头判断实拍 / AI 生成 / 代码渲染 / 混合，并生成复刻方案")
     ap.add_argument("-v", "--verbose", action="store_true", help="输出调试日志与完整异常堆栈")
     ap.add_argument("--env-file", help="额外的 .env（例如 capsule-cinema/.env，用于 VLM 配置）")
-    ap.add_argument("--lang", choices=LANGS, default=argparse.SUPPRESS, help="界面与输出语言：zh（默认）/ en")
+    ap.add_argument("--lang", dest="root_lang", choices=LANGS, default=argparse.SUPPRESS,
+                    help="命令行帮助和提示的语言：zh（默认）/ en；用在 decompose、apply-review 上时也决定报告语言")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     d = sub.add_parser("decompose", help="拆解一条视频")
@@ -1110,6 +1111,8 @@ def main(argv: list[str] | None = None) -> int:
 
     localize(ap, ", ".join(LABELS))
     args = ap.parse_args(argv)
+    if getattr(args, "lang", None) is None and getattr(args, "root_lang", None):
+        args.lang = args.root_lang  # `rea-video --lang en decompose ...`: the subcommand's own default would drop it
     setup_logging(args.verbose)
     _env(args)
     from .media import MediaError
