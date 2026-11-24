@@ -313,14 +313,31 @@ def _shot_audio(b: dict | None, r: dict, want_dialogue: bool, want_sfx: bool) ->
     return dlg, sfx
 
 
+def _has_real_face(r: dict, person_shots: set[int]) -> bool:
+    """Whether a shot likely shows a real / identifiable face (not a tabletop, product or scenery shot)."""
+    lab = (r.get("base") or {}).get("label")
+    if lab == "avatar":
+        return True
+    faces = r.get("faces")
+    if isinstance(faces, (int, float)) and faces >= 0.15:
+        return True
+    if lab in ("live_action", "film_footage"):
+        if r["index"] in person_shots or performance.of(r):
+            return True
+        if faces is None:  # breakdown without face detection: be conservative on live/film shots
+            return True
+    return False
+
+
 def _brief(seg: list[dict], keyframe_tag: dict[int, str], b: dict | None = None,
            want_dialogue: bool = False, want_sfx: bool = False) -> list[dict]:
+    person_shots = {s for c in (entities.cast(b).get("characters") or []) if c.get("kind") == "person" for s in (c.get("shots") or [])} if b else set()
     out, acc = [], 0.0
     for r in seg:
         act = performance.of(r)
         mv_loc, mv_en = camera_move_words(r)
         dlg, sfx = _shot_audio(b, r, want_dialogue, want_sfx)
-        has_face = r["base"]["label"] in _REAL_FACE_LABELS or (isinstance(r.get("faces"), (int, float)) and r["faces"] >= 0.3)
+        has_face = _has_real_face(r, person_shots)
         out.append({"shot": r["index"], "time": [round(r["start"], 3), round(r["end"], 3)], "at": round(acc, 3),
                     "duration": round(r["duration"], 3), "label": r["base"]["label"],
                     "source": shot_description(r),
@@ -365,7 +382,7 @@ def _format_audio_bits(x: dict, fmt: dict, en: bool) -> str:
             spk = f"S{idx}"
         elif dlg_tpl and "({speaker})" in dlg_tpl and not re.fullmatch(r"S\d+", spk):
             spk = f"S{idx}"  # MiniMax H3 expects speaker codes (S1), (S2)
-        txt = d["text"]
+        txt = d["text"].replace('"', "'")
         if dlg_tpl:
             bits.append(dlg_tpl.format(speaker=spk, lang=d.get("lang", "Chinese"), text=txt, emotion=""))
         else:
@@ -747,9 +764,11 @@ def checks(plan: dict, intent: dict, prompts: dict[str, str], notes: dict | None
                           "{u}'s reference frames still show the subject being swapped, so the model may morph it mid-shot: redraw them with the new subject as remake/redrawn/{f}.png",
                           u=u["id"], f="|".join(stale_frames)), u["id"])
         if spec.get("no_real_faces"):
-            face_shots = [x["shot"] for x in u.get("brief") or [] if x.get("real_face")]
-            has_unredrawn_ref = n_vid > 0 or any(not (root and redrawn_frame(root, x)) for x in source_frame_names(u))
-            if face_shots and has_unredrawn_ref:
+            framed_shots = {int(r["keyframe"]) for r in u.get("refs") or [] if r.get("keyframe") and not (root and redrawn_frame(root, f"shot{int(r['keyframe']):03d}"))}
+            frames_unredrawn = u.get("strategy") == "frames" and any(not (root and redrawn_frame(root, x)) for x in source_frame_names(u))
+            face_shots = [x["shot"] for x in u.get("brief") or []
+                          if x.get("real_face") and (n_vid > 0 or frames_unredrawn or x["shot"] in framed_shots)]
+            if face_shots:
                 m_name = u.get("model_name") or u.get("model") or "?"
                 add("warn", T("{u}：{m} 不收带真人脸的参考图或参考视频（镜头 {s} 含实拍/真人画面），请先把参考帧重画成虚拟/授权形象存入 remake/redrawn/，或换其他模型",
                               "{u}: {m} rejects reference images or videos with real human faces (shots {s} show filmed / real people); redraw frames into remake/redrawn/ or pick another model",
@@ -884,13 +903,19 @@ def rewrite_prompts(plan: dict, out: Path, client=None) -> dict[str, str]:
             n_sh = shots_written(cand)
             if n_sh and len(u["shots"]) > 1 and n_sh != len(u["shots"]):
                 errs.append(f"numbers {n_sh} shots, but unit {uid} has {len(u['shots'])} shots")
-            got[uid] = cand
             if errs:
                 still_pending.append(u)
                 bad_lines.append(f"- {uid}: " + "; ".join(errs))
+            else:
+                got[uid] = cand
         pending = still_pending
         feedback = "\n".join(bad_lines)
-    save_prompts(out, got)
+    if pending:
+        from .util import LOG
+
+        LOG.warning("rewrite_prompts skipped %d unit(s) that still failed lint: %s", len(pending), feedback)
+    if got:
+        save_prompts(out, got)
     return got
 
 

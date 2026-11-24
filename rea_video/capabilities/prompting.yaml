@@ -200,7 +200,7 @@ models:
     basis: third-party
     draft:
       shot: {zh: "[Shot {i}] {text}", en: "[Shot {i}] {text}"}
-      image_tag: "@Element{n}"
+      image_tag: "@Image{n}"
       dialogue_fmt: {zh: '{speaker}："{text}"', en: '{speaker}: "{text}"'}
     lint: {max_chars: 2500}
     structure: 没有固定公式；按 主体、动作、场景、运镜、光线、情绪 来写，示例顺序是 场景 → 主体 → 运镜 → 动作 → 台词
