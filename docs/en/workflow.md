@@ -69,7 +69,7 @@ rea-video decompose ref.mp4 -o out/ref --vlm --lang en
 
 You can also keep these in a file and pass `rea-video --env-file <path> decompose ...`. Check the `VLM:` line in `summary`: `ok` means it worked, `partial` means some shots got results, `failed` or `not_configured` means the run is the same as having no VLM, and `off` means it wasn't requested.
 
-If subtitles are Japanese or Korean, add `--ocr-lang ja` or `--ocr-lang ko`. For Bengali speech, add `--asr-lang bn`.
+If subtitles are English only, add `--ocr-lang en`. If they are Japanese or Korean, add `--ocr-lang ja` or `--ocr-lang ko`. For Bengali speech, add `--asr-lang bn`.
 
 ## 4. Review and apply
 
