@@ -15,7 +15,7 @@ from .readings import shot_description, shot_overlay_text
 from . import aspects, entities, narrative, performance, playbook
 from .classify import LABEL_ZH
 from .i18n import LangDict, T, join, lang, semi, shot_ids
-from .packaging import layer_name, anchor_text
+from .packaging import cue_rows, layer_name, anchor_text
 from .production import report_md as production_md
 from .plan import shot_prompts
 from .sound_source import MUSIC_ZH, SFX_ZH, VOICE_ZH
@@ -864,7 +864,7 @@ def packaging_md(b: dict) -> list[str]:
             if c.get("mid_motion"):
                 anim += T("（中途有弹跳/变色）", " (bounces / changes colour midway)")
             kind = c["kind_zh"] + (T("·跟随物体", " · follows an object") if c.get("follows") else "")
-            rows.append([f"{c['t0']:.2f}–{c['t1']:.2f}s", kind, c["text"].replace("/", " ⏎ ")[:40], c.get("style_zh", ""), anim or "—", join(sfx_by_ref.get(c["id"], [])) or "—"])
+            rows.append([f"{c['t0']:.2f}–{c['t1']:.2f}s", kind, " ⏎ ".join(cue_rows(c))[:40], c.get("style_zh", ""), anim or "—", join(sfx_by_ref.get(c["id"], [])) or "—"])
         L += _table([T("时间", "Time"), T("类型", "Kind"), T("文字", "Text"), T("样式", "Style"), T("入场 / 出场", "In / out"), T("音效", "SFX")], rows,
                     fold_title=T("文字时间轴（{n} 条）", "text timeline ({n} rows)", n=len(rows)), fold_over=0)
     if stickers:
