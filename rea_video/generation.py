@@ -387,7 +387,7 @@ def _format_audio_bits(x: dict, fmt: dict, en: bool) -> str:
             bits.append(dlg_tpl.format(speaker=spk, lang=d.get("lang", "Chinese"), text=txt, emotion=""))
         else:
             bits.append(T('{p}："{t}"', '{p}: "{t}"', p=spk, t=txt))
-    return (". " if en else "。") + (" ".join(bits) if en else "；".join(bits)) if bits else ""
+    return (". " if en else "。") + (". ".join(b.rstrip(".") for b in bits) if en else "；".join(bits)) if bits else ""
 
 
 def _tail_lines(raw_tail: list[str] | None, brief: list[dict], ambience: str = "") -> list[str]:
@@ -409,12 +409,16 @@ def _tail_lines(raw_tail: list[str] | None, brief: list[dict], ambience: str = "
 
 
 def _draft(strategy: str, refs: list[dict], brief: list[dict], swaps: list[dict], style, fmt: dict | None = None,
-           ambience: str = "") -> str:
+           ambience: str = "", lint_rules: dict | None = None) -> str:
     """A prompt from the brief: what to keep, what changes, shot by shot. `fmt` (the model's `draft` block in
     prompting.yaml) sets the prompt language, the shot lines, how images / videos are named, camera brackets, dialogue
     syntax and the fixed fields, so the draft is already in the model's own shape."""
-    raw = fmt or {}
-    dl = raw.get("lang") or lang()
+    raw = dict(fmt or {})
+    lrules = lint_rules or {}
+    if not raw.get("tail") and "overall_soundscape:" in (lrules.get("require") or []):
+        raw.setdefault("negatives_line", False)
+        raw["tail"] = ["overall_soundscape: Only the natural sounds of the actions on screen.", "non_diegetic_music: N/A"]
+    dl = raw.get("lang") or (lrules.get("language") if lrules.get("language") in ("zh", "en") else None) or lang()
     with using(dl):
         # any field may be split by language ({zh: …, en: …}); a field missing for this language falls back to the generic shape
         fmt = {k: (v.get(lang()) if isinstance(v, dict) else v) for k, v in raw.items()}
@@ -504,7 +508,7 @@ def _inputs(strategy: str, refs: list[dict], seg: list[dict], spec: dict) -> lis
                     "why": T("换进去的人、动物、商品，跨镜头一致", "what is swapped in, the same in every shot")})
     if kf:
         out.append({"kind": "ref_image", "need": "yes", "source": T("原片镜头 {s} 的画面（擦掉字幕）", "source frames of shots {s} (subtitles erased)",
-                                                                     s="、".join(f"#{r['keyframe']}" for r in kf)),
+                                                                     s=join(f"#{r['keyframe']}" for r in kf)),
                     "why": T("每个镜头一帧原片定构图和机位", "one source frame per shot fixes composition and camera")})
     if strategy == "frames":
         r = seg[0]
@@ -519,7 +523,7 @@ def _inputs(strategy: str, refs: list[dict], seg: list[dict], spec: dict) -> lis
 
 
 def build_unit(seg: list[dict], k: int, strategy: str, spec: dict, own: list[dict], swaps: list[dict], style,
-               model: dict | None, fmt: dict | None = None, b: dict | None = None) -> dict:
+               model: dict | None, fmt: dict | None = None, b: dict | None = None, lint_rules: dict | None = None) -> dict:
     t0, t1 = seg[0]["start"], seg[-1]["end"]
     dur = round(sum(r["duration"] for r in seg), 3)
     ranges = _ranges(seg)
@@ -528,7 +532,8 @@ def build_unit(seg: list[dict], k: int, strategy: str, spec: dict, own: list[dic
         votes[r["base"]["label"]] = votes.get(r["base"]["label"], 0.0) + r["duration"]
     label = max(votes.items(), key=lambda kv: kv[1])[0]
     parts = int(-(-dur // spec["max"])) if len(seg) == 1 and dur > spec["max"] + 1e-6 else 1
-    refs = [dict(r) for r in own] if strategy != "frames" or not spec["exclusive"] else []
+    can_ref_img = (spec.get("multi_ref") or int(spec.get("images") or 0) > 0) and (strategy != "frames" or not spec["exclusive"])
+    refs = [dict(r) for r in own] if can_ref_img else []
     kept_tags = {r["tag"] for r in refs}
     unit_swaps = [sw if sw.get("tag") in kept_tags else {**sw, "tag": None} for sw in swaps]
     keyframe_tag: dict[int, str] = {}
@@ -563,7 +568,8 @@ def build_unit(seg: list[dict], k: int, strategy: str, spec: dict, own: list[dic
             "shots": [r["index"] for r in seg], "start": round(t0, 3), "end": round(t1, 3), "duration": dur, "ranges": ranges,
             "mode": "multi_shot" if len(seg) > 1 else ("split" if parts > 1 else "single"), "calls": parts,
             "generate_s": round(dur / parts, 3), "call_s": call_s, "model": (model or {}).get("id"), "model_name": model_name((model or {}).get("name")),
-            "refs": refs, "brief": brief, "draft": _draft(strategy, refs, brief, unit_swaps, style, fmt, ambience=ambience), "draft_format": bool(fmt),
+            "refs": refs, "brief": brief, "draft": _draft(strategy, refs, brief, unit_swaps, style, fmt, ambience=ambience, lint_rules=lint_rules),
+            "draft_format": bool(fmt),
             "inputs": _inputs(strategy, refs, seg, spec)}
     unframed = [x["shot"] for x in brief if strategy == "keyframes" and not x.get("composition")]
     missing = [x["shot"] for x in brief if not x["action"]]
@@ -630,7 +636,8 @@ def plan_generation(b: dict, model: dict | None, intent: dict, new_scene: set[in
     new_part = part_starts(b)
     for run in runs(b["shots"], labels, skip, joinable_inserts=strategy in ("remix", "keyframes", "text") and max_shots != 1):
         for seg in pack(run, max_s, max_shots, new_scene, new_part):
-            units.append(build_unit(seg, len(units) + 1, strategy, spec, own, swaps, style, model, (notes or {}).get("draft"), b=b))
+            units.append(build_unit(seg, len(units) + 1, strategy, spec, own, swaps, style, model,
+                                    (notes or {}).get("draft"), b=b, lint_rules=(notes or {}).get("lint")))
     return {"strategy": strategy, "spec": spec, "labels": list(labels), "units": units, "own_refs": own,
             "rules": {"max_s": max_s, "max_shots": max_shots, "generate": intent.get("generate", "ai")}}
 
@@ -739,9 +746,14 @@ def checks(plan: dict, intent: dict, prompts: dict[str, str], notes: dict | None
             add("error", T("参考图找不到，请重新提供：{p}", "reference image missing, provide it again: {p}", p=Path(s["image"]).name))
     if spec.get("multi_ref") and not spec.get("images_stated"):
         add("warn", T("能力地图没写这个模型最多几张参考图，按 {n} 张排的；查到实际数后补进模型资料", "the capability map has no image limit for this model; planned for {n}, add the real one", n=UNKNOWN_IMAGES))
-    if spec.get("exclusive") and plan.get("strategy") == "frames" and any(s.get("image") for s in intent.get("swaps") or []):
+    has_swap_img = any(s.get("image") for s in intent.get("swaps") or [])
+    no_ref_img = not spec.get("multi_ref") and int(spec.get("images") or 0) <= 0
+    if has_swap_img and (spec.get("exclusive") and plan.get("strategy") == "frames" or no_ref_img):
         add("warn", T("当前模型在首尾帧模式下不接收额外参考图：先把替换主体画进每段的参考帧（存进 remake/redrawn/，文件名见各单元的提示）再生成",
-                      "in first/last-frame mode this model takes no extra reference images: redraw each part's reference frames with the swapped subject first (into remake/redrawn/, named in each unit's warning)"))
+                      "in first/last-frame mode this model takes no extra reference images: redraw each part's reference frames with the swapped subject first (into remake/redrawn/, named in each unit's warning)")
+            if plan.get("strategy") == "frames" else
+            T("当前模型不接收参考图：提示词里只保留文字描述，需要严格锁外观时请换支持参考图或首帧的模型",
+              "this model takes no reference images: only the text description is used; pick a model with reference images or first-frame input to lock appearance"))
     for u in units:
         n_img, n_vid = len(unit_images(u)), len({r["tag"] for r in u["refs"] if r["tag"].startswith("@视频")})
         if spec.get("images") is not None and n_img > max(spec["images"], 0) and (n_img or spec.get("multi_ref")):
@@ -794,7 +806,7 @@ def checks(plan: dict, intent: dict, prompts: dict[str, str], notes: dict | None
                                u=u["id"], n=n, m=len(u["shots"])), u["id"])
     stale = sorted(set(prompts) - {u["id"] for u in units})
     if stale:
-        add("warn", T("remake/prompts.json 里的 {s} 已经不在方案里，用不到了", "{s} in remake/prompts.json are not in the plan", s="、".join(stale)))
+        add("warn", T("remake/prompts.json 里的 {s} 已经不在方案里，用不到了", "{s} in remake/prompts.json are not in the plan", s=join(stale)))
     calls = sum(u["calls"] for u in units)
     if units and gen_seconds > 0 and calls / (gen_seconds / 60) > CALLS_PER_MIN:
         add("warn", T("{c} 次生成做 {s:.0f} 秒，切得太碎", "{c} calls for {s:.0f}s: cut too finely", c=calls, s=gen_seconds))
