@@ -361,7 +361,9 @@ AI 仿定格风格（材质在帧间漂移）与真正的定格动画（同一�
   "replication": {{
     "image_prompt": "复刻首帧的中文图像提示词（主体、构图、光线、风格，具体可执行；有人物时写首帧的表情）",
     "video_prompt": "复刻该镜头的中文视频提示词：写清动作过程和结束状态、运镜；人物表演写看得见的表情和动作（眼、眉、嘴、头、手），不写「开心」「难过」这类情绪词，幅度宁小勿大；只写想要的内容，不写否定句",
-    "video_prompt_en": "same video prompt in English"
+    "video_prompt_en": "same video prompt in English",
+    "motion_prompt": "图生视频（首帧/首尾帧模式）的纯动态提示词：只写主体接下来的运动过程、结束状态和运镜，删掉首帧图里已有的外貌、服装、场景和光线描述",
+    "motion_prompt_en": "same motion-only prompt in English (actions, end state and camera movement only, without repeating static look/scene)"
   }}
 }}"""
 
@@ -375,7 +377,7 @@ TAKE_NOTE = """
 这段片子是同一机位、同一条素材剪成的 {n} 段（跳剪），后面几段从片段开头后 {cuts} 秒开始。
 制作方式、拍法和素材（label_probs、aspects、embedded_assets 等）对整段给一次即可；
 另外加一个 segments 数组，按顺序给每一段的内容，共 {n} 项：
-"segments": [{{"description": "这一段的主体、动作和结束状态", "replication": {{"video_prompt": "复刻这一段的中文视频提示词", "video_prompt_en": "same in English"}}}}]
+"segments": [{{"description": "这一段的主体、动作和结束状态", "replication": {{"video_prompt": "复刻这一段的中文视频提示词", "video_prompt_en": "same in English", "motion_prompt": "首帧模式纯动态中文提示词", "motion_prompt_en": "motion-only in English"}}}}]
 """
 
 

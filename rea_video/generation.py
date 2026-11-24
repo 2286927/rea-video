@@ -27,10 +27,10 @@ from pathlib import Path
 import yaml
 
 from .readings import shot_description
-from . import performance
+from . import entities, performance
 from .classify import LABEL_ZH
 from .i18n import T, join, lang, model_name, semi, shot_ids, using
-from .plan import framing_words, shot_prompts, with_acting
+from .plan import camera_move_words, framing_words, hailuo_bracket, shot_prompts, with_acting
 
 REF_CLIP_S = 15.0  # one reference video: Seedance / Kling take clips up to about 15 s each
 SHORT_UNIT_S = 3.0  # a call this short on its own is unstable and wasteful
@@ -102,6 +102,14 @@ def load_prompts(out: Path) -> dict[str, str]:
     return {k: v for k, v in got.items() if isinstance(v, str) and v.strip()} if isinstance(got, dict) else {}
 
 
+def save_prompts(out: Path, prompts: dict[str, str]) -> Path:
+    p = Path(out) / PROMPTS_FILE
+    p.parent.mkdir(parents=True, exist_ok=True)
+    clean = {k: v.strip() for k, v in prompts.items() if isinstance(k, str) and isinstance(v, str) and v.strip()}
+    p.write_text(json.dumps(clean, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return p
+
+
 # ---------------------------------------------------------------- what the model takes
 def spec_of(model: dict | None) -> dict:
     m = model or {}
@@ -117,8 +125,17 @@ def spec_of(model: dict | None) -> dict:
             "ref_total": float(rv) if rv else REF_CLIP_S * max(1, int(refs.get("video") or 1)),
             "multi_ref": multi_ref, "images": int(refs.get("image") or (UNKNOWN_IMAGES if multi_ref else 0)),
             "images_stated": bool(refs.get("image")), "prefer": plan.get("strategy"), "plan_images": plan.get("images"),
+            "no_real_faces": bool(plan.get("no_real_faces")),
+            "no_audio_with_ref_video": bool(plan.get("no_audio_with_ref_video")),
+            "max_hardcut_s": float(plan["max_hardcut_s"]) if plan.get("max_hardcut_s") else None,
+            "api_params": dict(plan["api_params"]) if isinstance(plan.get("api_params"), dict) else {},
             "first": "video.i2v_first_frame" in prim, "last": "video.i2v_first_last" in prim,
             "exclusive": bool(lim.get("exclusive_inputs")), "native_audio": bool((m.get("audio") or {}).get("native"))}
+
+
+def effective_native_audio(spec: dict, strategy: str) -> bool:
+    """Whether the chosen strategy can actually generate native sound on this model."""
+    return bool(spec.get("native_audio")) and not (strategy == "remix" and spec.get("no_audio_with_ref_video"))
 
 
 def call_seconds(spec: dict, secs: float, refs: bool = False) -> int:
@@ -137,10 +154,17 @@ def planned_images(spec: dict) -> int:
 
 
 def choose_strategy(spec: dict, n_own: int) -> str:
-    if spec["ref_video"] and spec.get("prefer") in (None, "remix") and spec["ref_total"] >= REMIX_MIN_REF_S:
+    pref = spec.get("prefer")
+    if pref == "text":
+        return "text"
+    if pref == "frames" and spec["first"]:
+        return "frames"
+    if spec["ref_video"] and (spec["multi_shot"] or pref == "remix") and pref in (None, "remix") and spec["ref_total"] >= REMIX_MIN_REF_S:
         return "remix"
-    if spec["multi_shot"] and spec["multi_ref"] and planned_images(spec) >= n_own + 2:
+    if spec["multi_shot"] and spec["multi_ref"] and pref in (None, "keyframes") and planned_images(spec) >= n_own + 2:
         return "keyframes"
+    if spec["multi_shot"] and not spec["multi_ref"] and n_own == 0:
+        return "text"
     if spec["first"]:
         return "frames"
     return "text"
@@ -220,6 +244,13 @@ def _clips(ranges: list[list[float]], each: float) -> list[list[list[float]]]:
 
 
 # ---------------------------------------------------------------- one unit
+_WORD_NUMS = ("ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE", "TEN", "ELEVEN", "TWELVE")
+_STATIC_ZH_RE = re.compile(r"^(?:(?:竖屏|横屏|方屏)(?:\s*\d+:\d+)?[，,；;\s]*)*(?:(?:大?远景|大?全景|中近景|中全景|中景|近景|大?特写|平视|略?[俯仰]拍|顶拍)[，,。；;\s]*)+")
+_STATIC_EN_RE = re.compile(r"^(?:(?:vertical|horizontal|square)(?:\s*\d+:\d+)?[,;.\s]*)*(?:(?:extreme\s+|medium\s+)?(?:wide|full|medium|close-up)(?:\s+shot)?[,;.\s]*|(?:eye-level|slightly\s+(?:high|low)\s+angle|high\s+angle|low\s+angle|top-down)[,;.\s]*)+", re.I)
+_LANG_MAP = {"zh": "Chinese", "en": "English", "ja": "Japanese", "ko": "Korean", "es": "Spanish", "fr": "French"}
+_REAL_FACE_LABELS = ("live_action", "film_footage", "avatar")
+
+
 def _shot_text(r: dict) -> str:
     """What happens in the shot, in the report's language when the reader wrote it in both."""
     p = shot_prompts(r)
@@ -228,16 +259,82 @@ def _shot_text(r: dict) -> str:
     return p.get("video_prompt") or shot_description(r)
 
 
-def _brief(seg: list[dict], keyframe_tag: dict[int, str]) -> list[dict]:
+def _motion_text(r: dict, en: bool = False) -> str:
+    """Motion-only text for first/last-frame image-to-video: prefers an explicit motion_prompt, else strips static
+    framing prefixes from the video prompt so the text does not repeat what the input frame already shows."""
+    p = shot_prompts(r)
+    if en:
+        if p.get("motion_prompt_en"):
+            return p["motion_prompt_en"]
+        base = p.get("video_prompt_en") or ""
+        return _STATIC_EN_RE.sub("", base).strip() or base
+    if lang() == "en" and p.get("motion_prompt_en"):
+        return p["motion_prompt_en"]
+    if p.get("motion_prompt"):
+        return p["motion_prompt"]
+    base = _shot_text(r)
+    return (_STATIC_EN_RE if lang() == "en" else _STATIC_ZH_RE).sub("", base).strip() or base
+
+
+def _line_lang(text: str, default_code: str = "") -> str:
+    if re.search(r"[\u3040-\u30ff]", text):
+        return "Japanese"
+    if re.search(r"[\uac00-\ud7af]", text):
+        return "Korean"
+    if re.search(r"[\u3400-\u9fff]", text):
+        return "Chinese"
+    return _LANG_MAP.get(default_code.lower(), "English")
+
+
+def _shot_audio(b: dict | None, r: dict, want_dialogue: bool, want_sfx: bool) -> tuple[list[dict], list[str]]:
+    """Spoken lines and diegetic SFX falling inside shot `r`."""
+    if not b:
+        return [], []
+    dlg: list[dict] = []
+    if want_dialogue:
+        narr_lang = str(((b.get("whole_video_vlm") or {}).get("narration") or {}).get("language") or "")
+        for idx, ln in enumerate(entities.script(b), 1):
+            a, z = ln.get("start"), ln.get("end")
+            if isinstance(a, (int, float)) and isinstance(z, (int, float)) and r["start"] <= (a + z) / 2 < r["end"]:
+                txt = str(ln.get("text") or "").strip()
+                if not txt:
+                    continue
+                spk = str(ln.get("voice") or ln.get("speaker") or f"S{idx}").strip()
+                dlg.append({"speaker": spk, "text": txt, "lang": _line_lang(txt, narr_lang),
+                            **({"delivery": ln["delivery"]} if ln.get("delivery") else {})})
+    sfx: list[str] = []
+    if want_sfx:
+        for e in (b.get("audio_plan") or {}).get("sfx_merged") or []:
+            t = e.get("t")
+            if isinstance(t, (int, float)) and r["start"] <= t < r["end"] and e.get("confidence") != "low" and e.get("sync_with") != "text_pop":
+                desc = str(e.get("description") or e.get("type") or "").strip()
+                if desc and desc not in sfx:
+                    sfx.append(desc)
+    return dlg, sfx
+
+
+def _brief(seg: list[dict], keyframe_tag: dict[int, str], b: dict | None = None,
+           want_dialogue: bool = False, want_sfx: bool = False) -> list[dict]:
     out, acc = [], 0.0
     for r in seg:
         act = performance.of(r)
+        mv_loc, mv_en = camera_move_words(r)
+        dlg, sfx = _shot_audio(b, r, want_dialogue, want_sfx)
+        has_face = r["base"]["label"] in _REAL_FACE_LABELS or (isinstance(r.get("faces"), (int, float)) and r["faces"] >= 0.3)
         out.append({"shot": r["index"], "time": [round(r["start"], 3), round(r["end"], 3)], "at": round(acc, 3),
                     "duration": round(r["duration"], 3), "label": r["base"]["label"],
                     "source": shot_description(r),
-                    "action": with_acting(_shot_text(r), act, en=lang() == "en"), "framing": framing_words(r)[0],
-                    "action_en": with_acting(shot_prompts(r).get("video_prompt_en") or "", act, en=True), "framing_en": framing_words(r)[1],
-                    "composition": keyframe_tag.get(r["index"]), **({"acting": performance.summary(act)} if act else {})})
+                    "action": with_acting(_shot_text(r), act, en=lang() == "en"),
+                    "motion": with_acting(_motion_text(r, en=lang() == "en"), act, en=lang() == "en"),
+                    "framing": framing_words(r)[0], "camera_move": mv_loc,
+                    "action_en": with_acting(shot_prompts(r).get("video_prompt_en") or "", act, en=True),
+                    "motion_en": with_acting(_motion_text(r, en=True), act, en=True),
+                    "framing_en": framing_words(r)[1], "camera_move_en": mv_en,
+                    "bracket": hailuo_bracket(r), "real_face": has_face,
+                    "composition": keyframe_tag.get(r["index"]),
+                    **({"dialogue": dlg} if dlg else {}),
+                    **({"sfx": sfx} if sfx else {}),
+                    **({"acting": performance.summary(act)} if act else {})})
         acc += r["duration"]
     return out
 
@@ -253,10 +350,52 @@ def _swap_line(sw: dict) -> str:
             + (T("（参考 {k}）", " (see {k})", k=sw["tag"]) if sw.get("tag") else ""))
 
 
-def _draft(strategy: str, refs: list[dict], brief: list[dict], swaps: list[dict], style, fmt: dict | None = None) -> str:
+def _format_audio_bits(x: dict, fmt: dict, en: bool) -> str:
+    """Format a shot's spoken lines and SFX in the chosen model's own syntax."""
+    bits = []
+    sfx_tpl = fmt.get("sfx_fmt")
+    for s in x.get("sfx") or []:
+        if en and not s.isascii():
+            continue
+        bits.append(sfx_tpl.format(speaker="", lang="English", text=s, emotion="") if sfx_tpl else T("音效：{s}", "SFX: {s}", s=s))
+    dlg_tpl = fmt.get("dialogue_fmt")
+    for idx, d in enumerate(x.get("dialogue") or [], 1):
+        spk = d.get("speaker") or f"S{idx}"
+        if en and not spk.isascii():
+            spk = f"S{idx}"
+        elif dlg_tpl and "({speaker})" in dlg_tpl and not re.fullmatch(r"S\d+", spk):
+            spk = f"S{idx}"  # MiniMax H3 expects speaker codes (S1), (S2)
+        txt = d["text"]
+        if dlg_tpl:
+            bits.append(dlg_tpl.format(speaker=spk, lang=d.get("lang", "Chinese"), text=txt, emotion=""))
+        else:
+            bits.append(T('{p}："{t}"', '{p}: "{t}"', p=spk, t=txt))
+    return (". " if en else "。") + (" ".join(bits) if en else "；".join(bits)) if bits else ""
+
+
+def _tail_lines(raw_tail: list[str] | None, brief: list[dict], ambience: str = "") -> list[str]:
+    """Populate soundscape tail fields (such as MiniMax H3's overall_soundscape:) with measured SFX / ambience when available."""
+    if not raw_tail:
+        return []
+    sfx_en = list(dict.fromkeys(s for x in brief for s in (x.get("sfx") or []) if s.isascii()))
+    amb_en = ambience.strip() if ambience and ambience.isascii() else ""
+    out = []
+    for line in raw_tail:
+        if line.startswith("overall_soundscape:") and (sfx_en or amb_en):
+            parts = [amb_en.rstrip(".")] if amb_en else []
+            if sfx_en:
+                parts.append("Distinct action sounds: " + ", ".join(sfx_en[:5]))
+            out.append("overall_soundscape: " + ". ".join(parts) + ".")
+        else:
+            out.append(line)
+    return out
+
+
+def _draft(strategy: str, refs: list[dict], brief: list[dict], swaps: list[dict], style, fmt: dict | None = None,
+           ambience: str = "") -> str:
     """A prompt from the brief: what to keep, what changes, shot by shot. `fmt` (the model's `draft` block in
-    prompting.yaml) sets the prompt language, the shot lines, how images / videos are named and the fixed fields, so the
-    draft is already in the model's own shape; the agent still checks it against the model's notes."""
+    prompting.yaml) sets the prompt language, the shot lines, how images / videos are named, camera brackets, dialogue
+    syntax and the fixed fields, so the draft is already in the model's own shape."""
     raw = fmt or {}
     dl = raw.get("lang") or lang()
     with using(dl):
@@ -272,25 +411,46 @@ def _draft(strategy: str, refs: list[dict], brief: list[dict], swaps: list[dict]
             head.append(T("按下面的镜头顺序一次生成，镜头之间硬切；每个镜头的构图、景别和机位参考对应的原片画面图",
                           "Generate the shots below in order in one go, hard cuts between them; each shot takes composition, size and camera from its source frame image"))
         head += [_swap_line(sw) for sw in swaps]
-        st = style.get(lang(), "") if isinstance(style, dict) else style
-        if st:
-            head.append(st)
+        # in first/last-frame mode, the input frame already fixes aspect ratio, lighting and colour grade; repeating them weakens motion
+        if strategy != "frames":
+            st = style.get(lang(), "") if isinstance(style, dict) else style
+            if st:
+                head.append(st)
         if fmt.get("negatives_line", True):
             head.append(T("画面里不要出现字幕、文字和水印", "No subtitles, captions or watermarks in the picture"))
         lines = []
         for i, x in enumerate(brief, 1):
-            text = (x.get("action_en") if en and x.get("action_en") else x["action"]) \
-                or T("（缺镜头描述：先看图复核补写）", "(no description: write one in the image review)")
-            framing = x.get("framing_en") if en else x.get("framing")
-            if strategy == "keyframes" and not x.get("composition") and framing:
-                text = framing + T("。", ". ") + text
-            if x.get("composition"):
-                text += T("（构图参考 {k}）", " (composition: {k})", k=x["composition"])
+            if strategy == "frames":
+                text = (x.get("motion_en") if en and x.get("motion_en") else x.get("motion") or x.get("action")) \
+                    or T("（缺镜头描述：先看图复核补写）", "(no description: write one in the image review)")
+                mv = x.get("camera_move_en") if en else x.get("camera_move")
+                if fmt.get("camera_brackets") and x.get("bracket") and "[" not in text:
+                    text = f"{x['bracket']} {text}"
+                elif mv and mv.lower() not in text.lower():
+                    text = mv + T("，", ", ") + text
+            else:
+                text = (x.get("action_en") if en and x.get("action_en") else x["action"]) \
+                    or T("（缺镜头描述：先看图复核补写）", "(no description: write one in the image review)")
+                framing = x.get("framing_en") if en else x.get("framing")
+                if strategy == "keyframes" and not x.get("composition") and framing:
+                    text = framing + T("。", ". ") + text
+                if x.get("composition"):
+                    text += T("（构图参考 {k}）", " (composition: {k})", k=x["composition"])
+                if fmt.get("camera_brackets") and x.get("bracket") and "[" not in text:
+                    text = f"{x['bracket']} {text}"
+            audio_tail = _format_audio_bits(x, fmt, en)
+            if audio_tail:
+                text = text.rstrip("。.；;") + audio_tail
             a, z = x["at"], x["at"] + x["duration"]
-            keys = {"i": i, "text": text, "a": _mmss(a), "z": _mmss(z), "at": _mmss(a, ms=True),
+            i_word = _WORD_NUMS[i - 1] if i <= len(_WORD_NUMS) else str(i)
+            keys = {"i": i, "I_WORD": i_word, "text": text, "a": _mmss(a), "z": _mmss(z), "at": _mmss(a, ms=True),
                     "s0": int(round(a)), "s1": max(int(round(z)), int(round(a)) + 1), "d": max(1, int(round(x["duration"])))}
-            if fmt.get("shot"):
-                lines.append((fmt.get("first_shot") if i == 1 and fmt.get("first_shot") else fmt["shot"]).format(**keys))
+            shot_tpl = fmt.get("remix_shot") if strategy == "remix" and fmt.get("remix_shot") else fmt.get("shot")
+            if shot_tpl:
+                if len(brief) == 1 and strategy == "frames" and not fmt.get("first_shot"):
+                    lines.append(text)
+                else:
+                    lines.append((fmt.get("first_shot") if i == 1 and fmt.get("first_shot") else shot_tpl).format(**keys))
             elif len(brief) == 1:
                 lines.append(text)
             elif strategy == "remix":
@@ -298,11 +458,15 @@ def _draft(strategy: str, refs: list[dict], brief: list[dict], swaps: list[dict]
             else:
                 lines.append(T("镜头{i}（从 {a:.1f} 秒起）：{t}", "Shot {i} (from {a:.1f}s): {t}", i=i, a=a, t=text))
         sep = T("。", ". ")
-        out = fmt.get("head", "") + sep.join(h.rstrip("。.") for h in head) + sep.rstrip() + "\n" + "\n".join(lines)
-        if fmt.get("tail"):
-            out += "\n" + "\n".join(fmt["tail"])
+        join_str = fmt.get("join") if isinstance(fmt.get("join"), str) else "\n"
+        body_lines = join_str.join(ln.rstrip(".") + "." if join_str == " " and not ln.rstrip().endswith((".", "!", "?", '"')) else ln for ln in lines)
+        prefix = (sep.join(h.rstrip("。.") for h in head) + sep.rstrip() + (" " if join_str == " " else "\n")) if head else ""
+        out = (fmt.get("head") or "") + prefix + body_lines
+        tail = _tail_lines(fmt.get("tail"), brief, ambience=ambience)
+        if tail:
+            out += "\n" + "\n".join(tail)
     tags = {"图片": fmt.get("image_tag"), "视频": fmt.get("video_tag")}
-    return REF_TAG.sub(lambda m: tags[m.group(1)].format(n=m.group(2)) if tags[m.group(1)] else m.group(0), out)
+    return REF_TAG.sub(lambda m: tags[m.group(1)].format(n=m.group(2), n0=max(0, int(m.group(2)) - 1)) if tags[m.group(1)] else m.group(0), out)
 
 
 def _mmss(t: float, ms: bool = False) -> str:
@@ -338,7 +502,7 @@ def _inputs(strategy: str, refs: list[dict], seg: list[dict], spec: dict) -> lis
 
 
 def build_unit(seg: list[dict], k: int, strategy: str, spec: dict, own: list[dict], swaps: list[dict], style,
-               model: dict | None, fmt: dict | None = None) -> dict:
+               model: dict | None, fmt: dict | None = None, b: dict | None = None) -> dict:
     t0, t1 = seg[0]["start"], seg[-1]["end"]
     dur = round(sum(r["duration"] for r in seg), 3)
     ranges = _ranges(seg)
@@ -372,13 +536,17 @@ def build_unit(seg: list[dict], k: int, strategy: str, spec: dict, own: list[dic
             keyframe_tag[r["index"]] = tag
             refs.append({"tag": tag, "keyframe": r["index"], "t": round(r["start"] + min(0.3, r["duration"] / 2), 3),
                          "what": T("原片镜头 #{i} 的画面（擦掉字幕）：只参考构图、景别和机位", "source shot #{i} (subtitles erased): composition, size and camera only", i=r["index"])})
-    brief = _brief(seg, keyframe_tag)
+    can_audio = effective_native_audio(spec, strategy)
+    vsrc = (((b or {}).get("sound_sources") or {}).get("voice") or {}).get("source")
+    want_dlg = can_audio and (vsrc == "ai_video_native" or bool(((b or {}).get("intent") or {}).get("native_dialogue")))
+    ambience = str(((b or {}).get("whole_video_vlm") or {}).get("ambience") or "")
+    brief = _brief(seg, keyframe_tag, b=b, want_dialogue=want_dlg, want_sfx=can_audio)
     call_s = call_seconds(spec, dur / parts, refs=bool(refs))
     unit = {"id": f"G{k}", "kind": "generate", "strategy": strategy, "label": label, "label_zh": LABEL_ZH[label],
             "shots": [r["index"] for r in seg], "start": round(t0, 3), "end": round(t1, 3), "duration": dur, "ranges": ranges,
             "mode": "multi_shot" if len(seg) > 1 else ("split" if parts > 1 else "single"), "calls": parts,
             "generate_s": round(dur / parts, 3), "call_s": call_s, "model": (model or {}).get("id"), "model_name": model_name((model or {}).get("name")),
-            "refs": refs, "brief": brief, "draft": _draft(strategy, refs, brief, unit_swaps, style, fmt), "draft_format": bool(fmt),
+            "refs": refs, "brief": brief, "draft": _draft(strategy, refs, brief, unit_swaps, style, fmt, ambience=ambience), "draft_format": bool(fmt),
             "inputs": _inputs(strategy, refs, seg, spec)}
     unframed = [x["shot"] for x in brief if strategy == "keyframes" and not x.get("composition")]
     missing = [x["shot"] for x in brief if not x["action"]]
@@ -412,7 +580,7 @@ def part_starts(b: dict) -> set[int]:
 
 
 def plan_generation(b: dict, model: dict | None, intent: dict, new_scene: set[int], style, skip: set[int],
-                    notes: dict | None = None) -> dict:
+                    notes: dict | None = None, hardcut_max_s: float = 10.0) -> dict:
     """Generation units and the facts they were planned on. `skip`: shots made another way (motion drive, a clip
     reused from another unit)."""
     spec = spec_of(model)
@@ -428,29 +596,33 @@ def plan_generation(b: dict, model: dict | None, intent: dict, new_scene: set[in
         if s["from"] or s["to"]:
             swaps.append({"from": s["from"], "to": s["to"], "tag": tag})
     strategy = choose_strategy(spec, len(own))
+    cap_hardcut = spec.get("max_hardcut_s") or hardcut_max_s
     if strategy == "remix":
-        max_s, max_shots = min(spec["max"], spec["ref_total"]), spec["shots"]
+        max_s, max_shots = min(spec["max"], spec["ref_total"]), (spec["shots"] if spec["multi_shot"] else 1)
     elif strategy == "keyframes":
         # a swapped-in subject with no image is held only by its description: every extra call is another chance for it
-        # to come out different, so keep calls whole and let some shots go without a source frame
+        # to come out different, so keep calls whole and let some shots go without a source frame; otherwise apply S06 hardcut guard
         text_only = any(not s.get("image") for s in intent.get("swaps") or [])
-        max_s, max_shots = spec["max"], (spec["shots"] if text_only else min(x for x in (spec["shots"], planned_images(spec) - len(own)) if x))
+        max_s = spec["max"] if text_only else min(spec["max"], cap_hardcut)
+        max_shots = spec["shots"] if text_only else min(x for x in (spec["shots"], planned_images(spec) - len(own)) if x)
     elif strategy == "text" and spec["multi_shot"]:
-        max_s, max_shots = spec["max"], spec["shots"]
+        max_s, max_shots = min(spec["max"], cap_hardcut), spec["shots"]
     else:
         max_s, max_shots = spec["max"], 1
     units: list[dict] = []
     new_part = part_starts(b)
-    for run in runs(b["shots"], labels, skip, joinable_inserts=strategy in ("remix", "keyframes", "text")):
+    for run in runs(b["shots"], labels, skip, joinable_inserts=strategy in ("remix", "keyframes", "text") and max_shots != 1):
         for seg in pack(run, max_s, max_shots, new_scene, new_part):
-            units.append(build_unit(seg, len(units) + 1, strategy, spec, own, swaps, style, model, (notes or {}).get("draft")))
+            units.append(build_unit(seg, len(units) + 1, strategy, spec, own, swaps, style, model, (notes or {}).get("draft"), b=b))
     return {"strategy": strategy, "spec": spec, "labels": list(labels), "units": units, "own_refs": own,
             "rules": {"max_s": max_s, "max_shots": max_shots, "generate": intent.get("generate", "ai")}}
 
 
 # ---------------------------------------------------------------- checks
-TAG_RES = (r"@图片(\d+)", r"<Picture (\d+)>", r"(?<![@<])图片(\d+)", r"\[Image (\d+)\]", r"\bImage (\d+)\b")
-VIDEO_TAG_RES = (r"@视频(\d+)", r"<Video (\d+)>", r"\bVideo (\d+)\b")
+TAG_RES = (r"@图片(\d+)", r"@Image(\d+)", r"@Element(\d+)", r"@Subject(\d+)", r"<Picture (\d+)>",
+           r"(?<![@<])图片(\d+)", r"(?<![@<])图(\d+)", r"\[Image (\d+)\]", r"\b[Ii]mage (\d+)\b")
+ZERO_TAG_RE = r"<IMAGE_(\d+)>"
+VIDEO_TAG_RES = (r"@视频(\d+)", r"@Video(\d+)", r"<Video (\d+)>", r"(?<![@<])视频(\d+)", r"\b[Vv]ideo (\d+)\b")
 
 
 def lint_prompt(text: str, n_images: int, n_videos: int, notes: dict | None) -> list[str]:
@@ -464,7 +636,7 @@ def lint(text: str, n_images: int, n_videos: int, notes: dict | None) -> list[tu
     `when: refs` (only when reference images or videos are sent) and `level: warn` (a risk, not a format error)."""
     rules = (notes or {}).get("lint") or {}
     errs: list = []
-    imgs = [int(x) for p in TAG_RES for x in re.findall(p, text)]
+    imgs = [int(x) for p in TAG_RES for x in re.findall(p, text)] + [int(x) + 1 for x in re.findall(ZERO_TAG_RE, text)]
     vids = [int(x) for p in VIDEO_TAG_RES for x in re.findall(p, text)]
     if imgs and max(imgs) > n_images:
         errs.append(T("提到了第 {k} 张图，但只传 {n} 张", "refers to image {k} but only {n} are sent", k=max(imgs), n=n_images))
@@ -494,12 +666,15 @@ def lint(text: str, n_images: int, n_videos: int, notes: dict | None) -> list[tu
     return [("error", e) for e in errs] + [("warn", w) for w in warns]
 
 
-SHOT_RES = (r"\[Shot (\d+)\]", r"镜头\s*(\d+)", r"\bShot (\d+)\b")
+SHOT_RES = (r"\[Shot (\d+)\]", r"镜头\s*(\d+)", r"第\s*(\d+)\s*个镜头", r"\bShot (\d+)\b")
+WORD_SHOT_RE = re.compile(r"\bSHOT\s+(" + "|".join(_WORD_NUMS) + r")\b")
 
 
 def shots_written(text: str) -> int:
     """How many shots a prompt numbers (0 when it does not number them)."""
-    return max([int(x) for p in SHOT_RES for x in re.findall(p, text)] or [0])
+    nums = [int(x) for p in SHOT_RES for x in re.findall(p, text)]
+    nums += [_WORD_NUMS.index(w) + 1 for w in WORD_SHOT_RE.findall(text)]
+    return max(nums or [0])
 
 
 def redrawn_frame(out: Path, name: str) -> Path | None:
@@ -571,6 +746,14 @@ def checks(plan: dict, intent: dict, prompts: dict[str, str], notes: dict | None
             add("warn", T("{u} 的参考帧还是原片里被替换的主体，模型会在镜头中途变来变去：先照换入的主体重画，存成 remake/redrawn/{f}.png",
                           "{u}'s reference frames still show the subject being swapped, so the model may morph it mid-shot: redraw them with the new subject as remake/redrawn/{f}.png",
                           u=u["id"], f="|".join(stale_frames)), u["id"])
+        if spec.get("no_real_faces"):
+            face_shots = [x["shot"] for x in u.get("brief") or [] if x.get("real_face")]
+            has_unredrawn_ref = n_vid > 0 or any(not (root and redrawn_frame(root, x)) for x in source_frame_names(u))
+            if face_shots and has_unredrawn_ref:
+                m_name = u.get("model_name") or u.get("model") or "?"
+                add("warn", T("{u}：{m} 不收带真人脸的参考图或参考视频（镜头 {s} 含实拍/真人画面），请先把参考帧重画成虚拟/授权形象存入 remake/redrawn/，或换其他模型",
+                              "{u}: {m} rejects reference images or videos with real human faces (shots {s} show filmed / real people); redraw frames into remake/redrawn/ or pick another model",
+                              u=u["id"], m=m_name, s=shot_ids(face_shots)), u["id"])
         final = prompts.get(u["id"])
         if not final:
             m = u.get("model_name") or u.get("model") or "?"
@@ -578,9 +761,13 @@ def checks(plan: dict, intent: dict, prompts: dict[str, str], notes: dict | None
                           "{u} still has the tool's draft (already in {m}'s layout): check it against the model's notes and put the final into remake/prompts.json", u=u["id"], m=m)
                 if u.get("draft_format") else
                 T("{u} 还是通用草稿：按 {m} 的写法写好最终提示词，放进 remake/prompts.json", "{u} still has the generic draft: write the final prompt in {m}'s format into remake/prompts.json", u=u["id"], m=m), u["id"])
-        for lv, e in lint(final or u.get("draft") or "", n_img, n_vid, notes):
+        draft_or_final = final or u.get("draft") or ""
+        for lv, e in lint(draft_or_final, n_img, n_vid, notes):
             if final or lv == "warn":  # a draft is the tool's own wording: only its risks are worth a line
                 add(lv, f"{u['id']}: {e}", u["id"])
+            elif not final and ((notes or {}).get("lint") or {}).get("language") == "en" and ("英文" in e or "English" in e):
+                add("warn", T("{u} 的草稿里还带有中文（如替换主体或镜头描述），这个模型要求英文提示词：请翻译后写入 remake/prompts.json，或运行 rea-video plan --rewrite-prompts",
+                              "{u}'s draft still contains non-English text, while this model expects English prompts: translate it into remake/prompts.json or run rea-video plan --rewrite-prompts", u=u["id"]), u["id"])
         if final:
             n = shots_written(final)
             if n and len(u["shots"]) > 1 and n != len(u["shots"]):  # written for another split of the shots
@@ -596,6 +783,115 @@ def checks(plan: dict, intent: dict, prompts: dict[str, str], notes: dict | None
 
 
 DEFAULT_MODEL = "minimax-h3"  # used until the user names a model or sets a usual one (prefs engine)
+
+
+REWRITE_TEMPLATE = """You are an expert video-generation prompt engineer.
+Rewrite each generation unit's draft prompt into an idiomatic, production-ready final prompt strictly tailored to the target video model: {model_name} ({model_id}).
+
+Target strategy: {strategy}
+{strategy_rule}
+
+Target model prompt-writing specification:
+{guide}
+
+Hard validation rules your output MUST satisfy:
+- Output ONLY a valid JSON object: {{"prompts": {{"G1": "...", ...}}}} with one string per unit id.
+- Keep the exact number of shots in each multi-shot unit (if a unit has N shots and the model numbers shots, number 1..N; if the model forbids shot numbering like LTX-2.5, write one continuous paragraph with explicit cut transitions).
+- Address uploaded images and videos ONLY up to the exact count sent in each unit, using this model's exact reference syntax.
+- If the model requires English prompts, translate all scene, subject, swap and action descriptions into natural English, while keeping spoken dialogue or on-screen text in its original language.
+- Respect the model's negative-prompt rule: if the model forbids negative words (no / not / without / 不要), rewrite constraints positively.
+- Never describe emotions with abstract labels ("happy", "sad"); keep concrete visible facial expressions, body actions, camera movements and end states.
+
+Generation units to rewrite:
+{units_json}
+"""
+
+
+def _unit_rewrite_spec(u: dict, fmt: dict) -> dict:
+    raw = fmt or {}
+    img_tpl = raw.get("image_tag")
+    vid_tpl = raw.get("video_tag")
+    if isinstance(img_tpl, dict):
+        img_tpl = img_tpl.get(raw.get("lang") or lang()) or next(iter(img_tpl.values()), None)
+    if isinstance(vid_tpl, dict):
+        vid_tpl = vid_tpl.get(raw.get("lang") or lang()) or next(iter(vid_tpl.values()), None)
+
+    def _tag(tag: str) -> str:
+        m = REF_TAG.fullmatch(tag)
+        if not m:
+            return tag
+        tpl = img_tpl if m.group(1) == "图片" else vid_tpl
+        return tpl.format(n=m.group(2), n0=max(0, int(m.group(2)) - 1)) if tpl else tag
+
+    imgs = [{"index": i, "tag": _tag(r["tag"]), "what": r["what"]} for i, r in enumerate(unit_images(u), 1)]
+    vids = [{"index": i, "tag": _tag(r["tag"]), "what": r["what"]}
+            for i, r in enumerate([x for x in u.get("refs") or [] if x["tag"].startswith("@视频") and x.get("part", 1) == 1], 1)]
+    return {"id": u["id"], "shots_count": len(u["shots"]), "duration_s": u["duration"], "strategy": u["strategy"],
+            "uploaded_images": imgs, "uploaded_videos": vids, "shots": u["brief"], "draft": u["draft"]}
+
+
+def rewrite_prompts(plan: dict, out: Path, client=None) -> dict[str, str]:
+    """Use a configured LLM/VLM client to rewrite every generation unit's prompt into the target model's native style,
+    validate against `lint` + shot counts (retrying once with error feedback if needed), and save `remake/prompts.json`."""
+    units = plan.get("units") or []
+    if not units:
+        return {}
+    if client is None:
+        from .vlm import make_client
+
+        client = make_client(Path(out) / "vlm_cache")
+    if client is None:
+        raise RuntimeError("no LLM/VLM configured (set GEMINI_API_KEY or REA_VLM_BASE_URL / REA_VLM_API_KEY / REA_VLM_MODEL)")
+    notes = plan.get("prompting") or {}
+    fmt = notes.get("draft") or {}
+    st = plan.get("strategy") or "frames"
+    st_rule = {
+        "frames": "IMPORTANT (First/Last-Frame I2V mode): The input image ALREADY fixes subject appearance, clothing, background, lighting and framing. Write ONLY the motion progression, end state and camera movement; delete static scene/appearance descriptions.",
+        "remix": "IMPORTANT (Reference-video Remix mode): The reference video carries shot cuts, camera movement and pacing. Assign roles to uploaded assets clearly and describe what happens in each shot with the swapped subjects/props.",
+        "keyframes": "IMPORTANT (Multi-shot Keyframe Reference mode): Each framed shot gets a source composition image; swapped subjects have their own reference images. State each image's role clearly and write shots in order.",
+        "text": "Text-to-video mode: Describe subject, action progression, end state, environment, camera movement and lighting clearly.",
+    }.get(st, "")
+    guide_keys = ("structure", "language", "length", "multi_shot", "references", "dialogue", "negatives", "camera", "frame_mode", "pitfalls", "lint")
+    guide = yaml.safe_dump({k: notes[k] for k in guide_keys if notes.get(k)}, allow_unicode=True, sort_keys=False).strip() or "Follow standard concise video prompting."
+    u_specs = [_unit_rewrite_spec(u, fmt) for u in units]
+    base_prompt = REWRITE_TEMPLATE.format(
+        model_name=plan.get("model_name") or plan.get("model") or "video model",
+        model_id=plan.get("model") or "unknown",
+        strategy=st, strategy_rule=st_rule, guide=guide,
+        units_json=json.dumps(u_specs, ensure_ascii=False, indent=2),
+    )
+    got = dict(load_prompts(out))
+    pending = list(units)
+    feedback = ""
+    for _attempt in range(2):
+        if not pending:
+            break
+        ask = base_prompt if not feedback else (base_prompt + "\n\nFix these validation errors from your previous attempt:\n" + feedback)
+        ans = client.ask_json(ask, media=[], max_tokens=4096)
+        raw_map = ans.get("prompts") if isinstance(ans.get("prompts"), dict) else ans
+        bad_lines = []
+        still_pending = []
+        for u in pending:
+            uid = u["id"]
+            cand = str((raw_map or {}).get(uid) or "").strip()
+            if not cand:
+                still_pending.append(u)
+                bad_lines.append(f"- {uid}: missing from JSON output")
+                continue
+            n_img = len(unit_images(u))
+            n_vid = len({r["tag"] for r in u["refs"] if r["tag"].startswith("@视频") and r.get("part", 1) == 1})
+            errs = lint_prompt(cand, n_img, n_vid, notes)
+            n_sh = shots_written(cand)
+            if n_sh and len(u["shots"]) > 1 and n_sh != len(u["shots"]):
+                errs.append(f"numbers {n_sh} shots, but unit {uid} has {len(u['shots'])} shots")
+            got[uid] = cand
+            if errs:
+                still_pending.append(u)
+                bad_lines.append(f"- {uid}: " + "; ".join(errs))
+        pending = still_pending
+        feedback = "\n".join(bad_lines)
+    save_prompts(out, got)
+    return got
 
 
 def check_lines(cs: list[dict]) -> list[str]:

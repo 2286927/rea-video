@@ -152,6 +152,7 @@ HELP = {
     "plan.out_dir": "breakdown directory",
     "plan.model": "model id or name, saved to remake/intent.yaml (from rea-video models; for others, look it up and add it under ~/.rea-video/capabilities/models/)",
     "plan.generate": "ai: generate only the shots that were AI in the original and write a shooting plan for live action; all: generate the whole video (full remake after swapping people or objects)",
+    "plan.rewrite_prompts": "use the configured model (GEMINI_API_KEY or REA_VLM_*) to rewrite each unit's prompt in the chosen video model's style, validate and save to remake/prompts.json",
 
     "models": "list generation models in the capability map; with a model id, print its prompt guide and key-frame requirements",
     "models.model": "model id (such as seedance-2.5, kling-3.0); keyframes prints the general key-frame guide",

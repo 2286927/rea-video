@@ -380,8 +380,9 @@ def production_plan(b: dict, out: Path, engine: str = "minimax-h3") -> dict:
     from . import dance
 
     motion = dance.motion_indices(b)  # the moves are the point: driven from the source motion, not generated from frames
+    hardcut_max = float((seg.get("multishot_hardcut_s") or {}).get("max", 10.0))
     g = gen_mod.plan_generation(b, model, intent, new_scene, style, set(reused) | motion,
-                                notes=planner.prompting.get((model or {}).get("id")))
+                                notes=planner.prompting.get((model or {}).get("id")), hardcut_max_s=hardcut_max)
     units = g["units"]
     for again, src in sorted(reused.items()):
         u = next((u for u in units if src in u["shots"]), None)
@@ -403,9 +404,14 @@ def production_plan(b: dict, out: Path, engine: str = "minimax-h3") -> dict:
             plan["prompting"] = planner.prompting[model["id"]]
         voice = ((b.get("audio") or {}).get("voice") or {}).get("present")
         vsrc = ((b.get("sound_sources") or {}).get("voice") or {}).get("source")
-        if lim["native_audio"]:
+        if lim.get("no_audio_with_ref_video") and g["strategy"] == "remix":
+            plan["audio_note"] = T("当前模型在传参考视频时不能同时开启原生音频：人声、音效和配乐全部单独准备后在后期混入（若需音画同出对白，可改选支持参考视频出声的模型或改走关键帧模式）",
+                                   "sending a reference video disables native audio on this model: prepare voice, sound effects and music separately and mix them in post")
+        elif lim["native_audio"]:
             plan["audio_note"] = T("模型可以同时生成动作音效和环境声", "the model can generate action sound effects and ambience along with the picture") + \
-                (semi() + (T("口播建议单独 TTS 再混进去，方便改文案和卡时间", "voice-over is better done as separate TTS and mixed in, so copy and timing stay editable")
+                (semi() + (T("原片对白是随画面生成的：台词已按该模型格式放进提示词草稿", "the original dialogue was generated with the picture: spoken lines are formatted into the prompt drafts")
+                           if vsrc == "ai_video_native" else
+                           T("口播建议单独 TTS 再混进去，方便改文案和卡时间", "voice-over is better done as separate TTS and mixed in, so copy and timing stay editable")
                            if vsrc == "tts" else
                            T("口播是真人录的：单独录好再混进去，不让视频模型生成，方便改文案和卡时间",
                              "the voice was recorded by a person: record it separately and mix it in rather than having the video model speak, so copy and timing stay editable"))
@@ -601,6 +607,9 @@ def report_md(plan: dict) -> list[str]:
         L += ["", T("### 生成单元", "### Generation units"), ""] + gen_report(plan, plan.get("prompts") or {})
         if plan.get("prompting") and lang() == "zh":
             L += ["", "<details><summary>" + f"{plan['model_name']} 的提示词写法" + "</summary>", ""] + prompting_md(plan["prompting"]) + ["", "</details>"]
+        elif plan.get("prompting") and (plan["prompting"].get("sources") or []):
+            srcs = [f"- {u}" for u in plan["prompting"]["sources"]]
+            L += ["", f"<details><summary>Prompt guides for {plan['model_name']}</summary>", ""] + srcs + ["", "</details>"]
     if plan.get("drive"):
         from .dance import report_md as _drive_md
 

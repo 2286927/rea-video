@@ -159,12 +159,19 @@ def main() -> int:
                     errors.append(f"prompting.yaml:{mid}: lint 格式不对")
                 continue
             if k == "draft":  # the layout of the tool's prompt draft for this model (rea_video/generation.py _draft)
-                keys = {"lang", "head", "shot", "first_shot", "image_tag", "video_tag", "negatives_line", "tail"}
+                keys = {"lang", "head", "shot", "first_shot", "remix_shot", "join", "image_tag", "video_tag",
+                        "negatives_line", "camera_brackets", "dialogue_fmt", "sfx_fmt", "tail"}
                 ok = isinstance(x, dict) and set(x) <= keys and x.get("lang") in (None, "zh", "en")
-                for f in ("shot", "first_shot"):
+                for f in ("shot", "first_shot", "remix_shot"):
                     for v in ((x or {}).get(f).values() if isinstance((x or {}).get(f), dict) else [(x or {}).get(f)]):
                         try:
-                            v and v.format(i=1, text="", a="", z="", at="", s0=0, s1=1, d=1)
+                            v and v.format(i=1, I_WORD="ONE", text="", a="", z="", at="", s0=0, s1=1, d=1)
+                        except (KeyError, IndexError, ValueError):
+                            ok = False
+                for f in ("dialogue_fmt", "sfx_fmt"):
+                    for v in ((x or {}).get(f).values() if isinstance((x or {}).get(f), dict) else [(x or {}).get(f)]):
+                        try:
+                            v and v.format(speaker="S1", lang="English", text="", emotion="")
                         except (KeyError, IndexError, ValueError):
                             ok = False
                 if not ok:

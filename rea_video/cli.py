@@ -765,6 +765,15 @@ def cmd_plan(args) -> int:
     set_lang(b.get("lang", "zh"))
     b = finalize(b, out, engine=m["id"])
     plan = b.get("production_plan") or {}
+    if getattr(args, "rewrite_prompts", False) and plan.get("units"):
+        from .generation import rewrite_prompts
+
+        _check_vlm_config()
+        rewritten = rewrite_prompts(plan, out, client=_vlm_client(out))
+        b = finalize(b, out, engine=m["id"])
+        plan = b.get("production_plan") or {}
+        print(T("已按 {m} 的写法自动重写 {n} 段提示词 → {f}", "Rewrote {n} unit prompt(s) for {m} → {f}",
+                m=m["id"], n=len(rewritten), f=out / "remake" / "prompts.json"))
     n = sum(len(ref_clips(b, out, u)) for u in plan.get("units") or [])
     v = m.get("verified") or {}
     print(T("复刻方案已按 {m} 重出（报告第二部分）：{p}", "Remake plan redone for {m} (part two of the report): {p}",
@@ -1084,6 +1093,7 @@ def main(argv: list[str] | None = None) -> int:
     pl_.add_argument("out_dir", help="拆解目录")
     pl_.add_argument("--model", help="模型 id 或名称，写进 remake/intent.yaml（rea-video models 列出的；没有的先查资料补进 ~/.rea-video/capabilities/models/）")
     pl_.add_argument("--generate", choices=["ai", "all"], help="ai：只生成原片里 AI 做的镜头，实拍的出拍摄方案；all：整条都用模型生成（换人、换物后整条复刻）")
+    pl_.add_argument("--rewrite-prompts", action="store_true", help="用已配置的大模型（GEMINI_API_KEY 或 REA_VLM_*）按所选模型的提示词指南自动重写每段提示词，校验后写入 remake/prompts.json")
     pl_.set_defaults(func=cmd_plan)
 
     mo = sub.add_parser("models", help="列出能力地图里的生成模型；带模型 id 时打印这个模型的提示词写法和关键帧要求")

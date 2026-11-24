@@ -60,7 +60,19 @@
       }
     },
     "confidence": {"enum": ["high", "medium", "low"]},
-    "planning": {"type": "object", "additionalProperties": false, "description": "How remake plans use this model by default, when that is narrower than its limits", "properties": {"strategy": {"enum": ["remix", "keyframes", "frames", "text"]}, "images": {"type": "integer", "minimum": 1}}},
+    "planning": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "How remake plans use this model by default, when that is narrower than its limits",
+      "properties": {
+        "strategy": {"enum": ["remix", "keyframes", "frames", "text"]},
+        "images": {"type": "integer", "minimum": 1},
+        "no_real_faces": {"type": "boolean", "description": "Model rejects reference images or videos containing identifiable real human faces"},
+        "no_audio_with_ref_video": {"type": "boolean", "description": "Native audio cannot be enabled when a reference video is sent"},
+        "max_hardcut_s": {"type": "number", "minimum": 1, "description": "Maximum seconds of consecutive hard-cut shots in a non-remix multi-shot call"},
+        "api_params": {"type": "object", "description": "Model-specific API parameters to pass in remake jobs"}
+      }
+    },
     "prompting": {"type": "object", "description": "Optional inline prompt-writing rules for user-defined model entries"},
     "probe_scores": {"type": "object"},
     "notes": {"type": "string"}
