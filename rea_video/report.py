@@ -1097,32 +1097,42 @@ def markdown(b: dict, credit: bool = True, html_marks: bool = False) -> str:
 # ------------------------------------------------------------------ HTML ------------------------------------------
 
 _RE_IMG = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
-_RE_LINK = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
 # 只有报告自己生成的这几种行可以原样进 HTML；VLM / OCR 文字里换行带出来的标签一律转义
 # class="ref": reference data (timelines, per-shot evidence) that stays folded when the report is printed
 _RE_RAW_OK = re.compile(r'<details(?: class="ref")?><summary>[^<>]*</summary>|</details>|<!--[^<>]*-->')
 
 
-def _safe_url(m: re.Match, tpl: str) -> str:
+def _safe_url(url: str) -> bool:
     """Links / images only to http(s) or relative paths (no javascript:, data: ...)."""
-    url = m.group(2)
-    if ":" in url.split("/", 1)[0] and not url.lower().startswith(("http://", "https://")):
-        return m.group(0)
-    return tpl.format(text=m.group(1), url=url)
-_RE_BOLD = re.compile(r"\*\*(.+?)\*\*")
-_RE_CODE = re.compile(r"`([^`]+)`")
+    return ":" not in url.split("/", 1)[0] or url.lower().startswith(("http://", "https://"))
+
+
+# code, bold, image and link in one pass: every piece is escaped once, and no rule sees HTML another rule wrote
+_RE_INLINE = re.compile(r"`([^`]+)`|\*\*(.+?)\*\*|(!?)\[([^\]]*)\]\(([^)\s]+)\)")
 _RE_SEP = re.compile(r"^\|(\s*:?-+:?\s*\|)+\s*$")
 
 
 def _inline(s: str) -> str:
-    s = html.escape(s, quote=True)
-    s = _RE_CODE.sub(r"<code>\1</code>", s)
-    s = _RE_BOLD.sub(r"<b>\1</b>", s)
-    s = _RE_IMG.sub(lambda m: _safe_url(m, '<img src="{url}" alt="{text}" loading="lazy">'), s)
-    # a link to a local sound clip plays in place
-    s = _RE_LINK.sub(lambda m: _safe_url(m, '<audio controls preload="none" src="{url}" title="{text}"></audio>'
-                                         if re.fullmatch(r"[\w./-]+\.(wav|mp3|m4a)", m.group(2)) else '<a href="{url}">{text}</a>'), s)
-    return s
+    esc = lambda x: html.escape(x, quote=True)  # noqa: E731
+    out, pos = [], 0
+    for m in _RE_INLINE.finditer(s):
+        out.append(esc(s[pos:m.start()]))
+        pos = m.end()
+        code, bold, image, text, url = m.groups()
+        if code is not None:
+            out.append(f"<code>{esc(code)}</code>")
+        elif bold is not None:
+            out.append(f"<b>{_inline(bold)}</b>")
+        elif not _safe_url(url) or not (image or text):
+            out.append(esc(m.group(0)))
+        elif image:
+            out.append(f'<img src="{esc(url)}" alt="{esc(text)}" loading="lazy">')
+        elif re.fullmatch(r"[\w./-]+\.(wav|mp3|m4a)", url):  # a link to a local sound clip plays in place
+            out.append(f'<audio controls preload="none" src="{esc(url)}" title="{esc(text)}"></audio>')
+        else:
+            out.append(f'<a href="{esc(url)}">{_inline(text)}</a>')
+    out.append(esc(s[pos:]))
+    return "".join(out)
 
 
 def _md_to_html(lines: list[str], b: dict) -> str:
@@ -1301,7 +1311,8 @@ def _stems_html(b: dict) -> str:
     if not (b.get("stems") or {}).get("ok"):
         return ""
     return "<div class='stems'>" + "".join(
-        f"<div>{name}{_colon()}<audio controls preload='none' src='stems/{f}'></audio></div>" for f, name in _stem_tracks(b)) + "</div>"
+        f"<div>{html.escape(name)}{_colon()}<audio controls preload='none' src='stems/{html.escape(f, quote=True)}'></audio></div>"
+        for f, name in _stem_tracks(b)) + "</div>"
 
 
 def _stem_tracks(b: dict) -> list[tuple[str, str]]:
@@ -1378,10 +1389,15 @@ details{padding:0;border:0} summary{color:var(--fg)} a{color:inherit}}
 """.replace("WM_LIGHT", _WATERMARK.format(c="%2314161b12")).replace("WM_DARK", _WATERMARK.format(c="%23ffffff10")).replace("WM_HERO", _WATERMARK.format(c="%23ffffff14")).replace("PATH", PROJECT_PATH)
 
 
+# the report is a static page: nothing in it runs script, embeds plugins or frames, or submits a form
+_CSP = "script-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"
+
+
 def html_report(b: dict) -> str:
     body = _md_to_html(markdown(b, credit=False, html_marks=True).split("\n"), b)
     tagline = T("视频逆向拆解报告", "Video breakdown report")
     return (f"<!doctype html><html lang=\"{lang()}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            f"<meta http-equiv=\"Content-Security-Policy\" content=\"{_CSP}\">"
             f"<meta name=\"generator\" content=\"REA-VIDEO\"><title>{T('拆解：', 'Breakdown: ')}{html.escape(b['source']['filename'])} · REA-VIDEO</title><style>{_CSS}</style></head><body>"
             f"<div class='wm' aria-hidden='true'></div><div class='brand'><a class='logo' href='{PROJECT_URL}'><i></i>REA-VIDEO</a><span>{tagline}</span>"
             f"<a class='path' href='{PROJECT_URL}'>{PROJECT_PATH}</a></div><div class='layout'>{_toc(body)}<main>\n{body}\n"
