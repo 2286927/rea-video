@@ -354,24 +354,42 @@ def _picture_how(b: dict) -> str:
 
 
 def _layers_md(b: dict) -> list[str]:
-    """The mental model first: every short video is a picture, things laid on top of it, and sound."""
+    """Concrete production pipeline summary for this specific video (no generic textbook filler)."""
     s = b["summary"]
+    plan = b.get("production_plan") or {}
     n_by: dict[str, int] = {}
     for r in b["shots"]:
         n_by[r["base"]["label_zh"]] = n_by.get(r["base"]["label_zh"], 0) + 1
-    pic = join(T("{l} {n} 镜", "{l} {n} shot{s}", l=m["label_zh"], n=n_by.get(m["label_zh"], 0), s="" if n_by.get(m["label_zh"]) == 1 else "s")
+    pic = join(T("{l} {n} 镜（{p}）", "{l} {n} shot{s} ({p})", l=m["label_zh"], n=n_by.get(m["label_zh"], 0),
+                 s="" if n_by.get(m["label_zh"]) == 1 else "s", p=_pct(m["ratio"]))
                for m in s["production_mix"] if n_by.get(m["label_zh"]))
+    pic_how = _picture_how(b) or s.get("production") or "—"
+    if plan.get("strategy") and plan.get("units"):
+        from .generation import strategy_name
+
+        img_n = len(plan.get("image_tasks") or [])
+        pic_how += T("（模态：{m}", " (modality: {m}", m=strategy_name(plan["strategy"])) + (
+            T("；含 {n} 张前置图片方案）", "; {n} upstream frame prompts)", n=img_n) if img_n else T("）", ")"))
+    rm = s.get("real_material") or {}
+    if rm.get("shots"):
+        pic += T("；含真实素材 {n} 镜（{r:.0%}）", "; includes real material in {n} shot{s} ({r:.0%})",
+                 n=len(rm["shots"]), s="" if len(rm["shots"]) == 1 else "s", r=rm["ratio"])
+    pack = b.get("packaging") or {}
+    pack_lines = [x for x in (pack.get("summary_zh") or []) if x]
     over = _overlay_kinds(b)
     snd, snd_how = _sound_brief(b)
-    rows = [[T("**画面**（底层）", "**Picture** (base)"), pic, _picture_how(b) or s.get("production") or "—", T("「自己复刻」", "“Remake it yourself”")],
-            [T("**包装**（叠在画面上）", "**Packaging** (on top)"), join(over) or T("没有", "none"),
-             T("剪辑软件里加：字幕、花字、贴纸照时间轴摆", "add in the editor: subtitles, styled text and stickers by the timeline") if over else "—",
-             T("「剪辑包装层」", "“Packaging layer”")],
-            [T("**声音**", "**Sound**"), snd, snd_how, T("「声音」", "“Sound”")]]
-    L = ["", T("## 一眼看懂：画面、包装、声音三层", "## At a glance: picture, packaging, sound"), "",
-         T("短视频都可以拆成三层：底下是画面本身，上面叠字幕、花字、贴纸，再配上声音。复刻时一层一层做。",
-           "Any short video splits into three layers: the picture, what is laid on top of it (subtitles, styled text, stickers), and the sound. Remake it one layer at a time.")]
-    L += _table([T("层", "Layer"), T("这条视频里是什么", "In this video"), T("怎么做", "How to make it"), T("细节", "Detail")], rows)
+    L = ["", T("## 制作链路速览", "## Production pipeline at a glance"), ""]
+    rows = [[T("**底层画面**", "**Base picture**"), pic, pic_how]]
+    if pack_lines or over:
+        p_what = semi().join(pack_lines) if pack_lines else join(over)
+        files = (pack.get("files") or {})
+        f_hint = T("导出 `{f}` 对齐时间轴", "export `{f}` for timeline alignment",
+                   f=files.get("srt") or files.get("ass") or "packaging/timeline.json")
+        rows.append([T("**后期包装**", "**Packaging**"), p_what, f_hint])
+    else:
+        rows.append([T("**后期包装**", "**Packaging**"), T("无后期字幕、花字或贴纸（纯画面呈现）", "no overlaid subtitles, styled text or stickers"), T("无需包装层", "none needed")])
+    rows.append([T("**声音配置**", "**Sound**"), snd, snd_how])
+    L += _table([T("环节", "Stage"), T("本片实际构成", "What this video uses"), T("复刻要点", "Remake approach")], rows)
     return L
 
 
@@ -592,12 +610,19 @@ def _content_md(b: dict, user: bool = False) -> list[str]:
     lines = entities.script(b)
     L = ["", T("## 内容与结构", "## Content and structure"), ""]
     if not w and not lines:
+        has_pack = bool(_overlay_kinds(b))
         if narrative.beats(b):
             L.append(T("- 下面的叙事线来自逐镜看图；台词没有单独整理，字幕原文见「剪辑包装层」",
-                       "- The narrative line below comes from reading each shot; the lines were not transcribed separately, subtitle text is under “Packaging layer”"))
+                       "- The narrative line below comes from reading each shot; the lines were not transcribed separately, subtitle text is under “Packaging layer”")
+                     if has_pack else
+                     T("- 下面的叙事线来自逐镜看图；全片无口播台词与后期字幕",
+                       "- The narrative line below comes from reading each shot; no spoken dialogue or overlaid subtitles"))
         else:
             L.append(T("- 这次没有分析整片内容（要开 AI 看图）；字幕原文见「剪辑包装层」",
-                       "- The whole video's content was not analysed this time (needs AI image reading); subtitle text is under “Packaging layer”"))
+                       "- The whole video's content was not analysed this time (needs AI image reading); subtitle text is under “Packaging layer”")
+                     if has_pack else
+                     T("- 这次没有分析整片内容（要开 AI 看图）",
+                       "- The whole video's content was not analysed this time (needs AI image reading)"))
         return L + _narrative_md(b)
     if w.get("summary") and not user:
         L.append(T("- 概括：{s}", "- Summary: {s}", s=w["summary"]))
@@ -650,10 +675,24 @@ def _narrative_md(b: dict) -> list[str]:
 
 def _cast_md(b: dict) -> list[str]:
     c = entities.cast(b)
+    has_reader = bool(((b.get("analysis") or {}).get("vlm") or {}).get("used") or (b.get("analysis") or {}).get("review"))
+    non_char_only = bool(b.get("shots")) and all(r["base"]["label"] in ("code_render", "screen_capture") for r in b.get("shots", []))
+    if has_reader and non_char_only and not (c["characters"] or c["scenes"] or c["props"] or c.get("style")):
+        return []
     L = ["", T("## 角色、场景与道具", "## Cast, scenes and props"), ""]
+    if c.get("style"):
+        L.append(T("- **视觉风格**：{s}", "- **Visual style**: {s}", s=c["style"]))
+        L.append("")
     if c["characters"]:
         L += _table([T("编号", "Id"), T("称呼", "Name"), T("类型", "Kind"), T("外观", "Look"), T("作用", "Role"), T("声音", "Voice"), T("出场", "Shots")],
                     [[ch["id"], ch["name"], entities.KIND_ZH.get(ch["kind"], ch["kind"]), ch["look"], ch["role"], ch["voice"], _shots_str(ch["shots"])] for ch in c["characters"]])
+        rec_names = [ch["name"] for ch in c["characters"] if ch.get("name") and len(ch.get("shots") or []) >= 2]
+        if len(c["characters"]) >= 2 and not rec_names:
+            L += ["", T("- 角色关系：各镜头为独立单次角色（合集/混剪结构），复刻时按镜独立出图即可，无需跨镜头锁同一张角色设定图",
+                        "- Cast structure: each shot features a distinct one-off character (anthology / montage); generate frames independently per shot without cross-shot face locking")]
+        elif rec_names:
+            L += ["", T("- 角色一致性：{n} 跨多个镜头出场，复刻时需先固定基准图并在后续镜头用图生图/参考图锁住外观",
+                        "- Character consistency: {n} appear across multiple shots; lock an anchor image first and feed it as reference in later shots", n=join(rec_names[:5]))]
     else:
         L.append(T("- 这次没有整理出角色（要开 AI 看图）",
                    "- No cast extracted this time (needs AI image reading)")
@@ -834,15 +873,7 @@ def _audio_md(b: dict) -> list[str]:
 
 
 def _visual_md(b: dict, user: bool = False) -> list[str]:
-    style = entities.cast(b).get("style")
-    L = aspects.report_md(b, user=user)
-    if not L and not style:
-        return []
-    if not L:
-        L = ["", T("## 拍法与打光", "## Camera and lighting") if user else T("## 拍法、打光与剪辑", "## Camera, lighting and editing"), ""]
-    if style:
-        L.insert(3, T("- 视觉风格：{s}", "- Visual style: {s}", s=style))
-    return L
+    return aspects.report_md(b, user=user)
 
 
 def packaging_md(b: dict) -> list[str]:
@@ -852,12 +883,11 @@ def packaging_md(b: dict) -> list[str]:
         return []
     cues = [c for c in pack.get("text_cues", []) if c["kind"] != "scene" and not c.get("part_of_picture")]
     stickers = [st for st in pack.get("stickers", []) if not st.get("in_picture")]
+    if not cues and not stickers and not pack.get("vlm_text_effects"):
+        return []
     L = ["", T("## 剪辑包装层（字幕 / 花字 / 贴纸 / 音效卡点）", "## Packaging layer (subtitles / styled text / stickers / sound-effect hits)"), ""]
     for line in pack.get("summary_zh") or []:
         L.append(f"- {line}")
-    if not cues and not stickers:
-        L.append(T("- 没有检出后期叠加的文字或贴纸", "- No overlaid text or stickers detected")
-                 + (T("（未开 OCR，文字层没有分析）", " (OCR off, text layer not analysed)") if not (b.get("analysis") or {}).get("ocr", True) else ""))
     if cues:
         sfx_by_ref: dict[str, list[str]] = {}
         for e in [x for x in (b.get("audio_plan") or {}).get("sfx_merged", []) if not x.get("in_scene")]:  # the picture's own sound is not a cue
@@ -903,10 +933,16 @@ def packaging_md(b: dict) -> list[str]:
         for e in fx:
             L.append(f"- {e.get('t', '')}s {e.get('kind', '')}「{e.get('text', '')}」{e.get('style', '')} {e.get('animation', '')}")
         L += ["", "</details>"]
-    L += ["", T("- 复刻：字幕文件 `packaging/subtitles.srt` 可以直接导入剪映，换成自己的话；带样式的版本是 `packaging/overlays.ass`"
-                + ("；贴纸和动图去素材库找同款" if stickers else ""),
-                "- Remake: import `packaging/subtitles.srt` into your editor and put in your own words; the styled version is `packaging/overlays.ass`"
-                + ("; find matching stickers and GIFs in an asset library" if stickers else ""))]
+    files = pack.get("files") or {}
+    rem_bits = []
+    if files.get("srt"):
+        rem_bits.append(T("字幕文件 `{f}` 可直接导入剪辑软件换成自己的话", "import `{f}` into your editor and replace the words", f=files["srt"]))
+    if files.get("ass"):
+        rem_bits.append(T("带样式的字幕/花字版本在 `{f}`", "styled version in `{f}`", f=files["ass"]))
+    if stickers:
+        rem_bits.append(T("贴纸和动图去素材库找同款", "find matching stickers and GIFs in an asset library"))
+    if rem_bits:
+        L += ["", T("- 复刻：", "- Remake: ") + semi().join(rem_bits)]
     return L
 
 
@@ -994,9 +1030,14 @@ def _shot_detail_md(r: dict) -> list[str]:
     if act:
         L.append(T("- 表演：{a}", "- Acting: {a}", a=performance.summary(act))
                  + (T("；语气：{v}", "; delivery: {v}", v=act["voice"]) if act.get("voice") else ""))
-    cl = aspects.shot_text(r) if base["label"] in aspects.PHOTOGRAPHIC else ""
-    if cl:
-        L.append(T("- 拍法/打光：{c}", "- Camera / lighting: {c}", c=cl))
+    if base["label"] in aspects.OWN_FILMED:
+        cl = aspects.shot_text(r)
+        if cl:
+            L.append(T("- 拍法/打光：{c}", "- Camera / lighting: {c}", c=cl))
+    elif base["label"] in aspects.PHOTOGRAPHIC:
+        vl = aspects.visual_shot_text(r)
+        if vl:
+            L.append(T("- 构图/光影：{c}", "- Framing / light: {c}", c=vl))
     if base.get("scene_text"):
         L.append(T("- 画面里物体上的字（不是后期字幕）：", "- Text on objects in the scene (not subtitles): ") + join(base["scene_text"][:6]))
     intrinsic = base["label"] in ("code_render", "screen_capture")
@@ -1037,8 +1078,12 @@ def _shot_detail_md(r: dict) -> list[str]:
     rep = r["replication"]
     L += ["", T("- 复刻：{n}", "- Remake: {n}", n=rep["note"])]
     p = shot_prompts(r)
+    if p.get("image_prompt"):
+        L.append(T("  - 反推首帧生图提示词：{p}", "  - Reverse-engineered image prompt: {p}", p=p["image_prompt"]))
+    if p.get("motion_prompt"):
+        L.append(T("  - 图生视频纯动态提示词：{p}", "  - Image-to-video motion prompt: {p}", p=p["motion_prompt"]))
     if p.get("video_prompt"):
-        L.append(T("  - 镜头描述（复核写的，生成提示词从它来）：{p}", "  - Shot description (from the review; the generation prompts start from it): {p}", p=p["video_prompt"]))
+        L.append(T("  - 完整视频提示词：{p}", "  - Full video prompt: {p}", p=p["video_prompt"]))
     return L
 
 
